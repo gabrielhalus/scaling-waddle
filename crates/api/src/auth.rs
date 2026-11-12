@@ -56,6 +56,15 @@ pub struct AuthUser {
     pub role: String,
 }
 
+impl AuthUser {
+    pub fn require_writer(&self) -> Result<(), ApiError> {
+        match self.role.as_str() {
+            "admin" | "operator" => Ok(()),
+            _ => Err(ApiError::Forbidden),
+        }
+    }
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
@@ -93,12 +102,12 @@ fn validate(credentials: &Credentials) -> Result<String, ApiError> {
                 && !domain.ends_with('.')
         });
     if !valid_email {
-        return Err(ApiError::BadRequest("adresse e-mail invalide"));
+        return Err(ApiError::BadRequest("adresse e-mail invalide".into()));
     }
     let len = credentials.password.chars().count();
     if !(MIN_PASSWORD_LEN..=MAX_PASSWORD_LEN).contains(&len) {
         return Err(ApiError::BadRequest(
-            "le mot de passe doit faire entre 12 et 256 caractères",
+            "le mot de passe doit faire entre 12 et 256 caractères".into(),
         ));
     }
     Ok(email)

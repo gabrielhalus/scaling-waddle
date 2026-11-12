@@ -5,21 +5,42 @@ use serde_json::json;
 
 #[derive(Debug)]
 pub enum ApiError {
-    BadRequest(&'static str),
+    BadRequest(String),
+    Invalid {
+        message: String,
+        details: Vec<String>,
+    },
     Unauthorized,
+    Forbidden,
+    NotFound,
     Conflict(&'static str),
     Internal,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "identifiants invalides"),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
-            Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "erreur interne"),
+        let (status, body) = match self {
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, json!({ "error": message })),
+            Self::Invalid { message, details } => (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": message, "details": details }),
+            ),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                json!({ "error": "identifiants invalides" }),
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                json!({ "error": "droits insuffisants" }),
+            ),
+            Self::NotFound => (StatusCode::NOT_FOUND, json!({ "error": "introuvable" })),
+            Self::Conflict(message) => (StatusCode::CONFLICT, json!({ "error": message })),
+            Self::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "erreur interne" }),
+            ),
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(body)).into_response()
     }
 }
 
