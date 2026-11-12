@@ -6,3 +6,4 @@ pub mod refresh_tokens;
 pub mod shutdown;
 pub mod telemetry;
 pub mod users;
+pub mod workflows;
