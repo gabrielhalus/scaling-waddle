@@ -2,6 +2,9 @@ pub mod auth;
 pub mod error;
 pub mod health;
 pub mod state;
+#[cfg(test)]
+mod testing;
+pub mod triggers;
 pub mod workflows;
 
 use axum::Router;
@@ -13,5 +16,6 @@ pub fn router(state: AppState) -> Router {
         .merge(health::routes())
         .merge(auth::routes())
         .merge(workflows::routes())
+        .merge(triggers::routes())
         .with_state(state)
 }
