@@ -1793,6 +1793,7 @@ version = "0.1.0"
 dependencies = [
  "cel",
  "serde_json",
+ "sw-domain",
  "thiserror",
 ]
 
