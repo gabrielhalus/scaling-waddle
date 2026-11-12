@@ -26,6 +26,23 @@ pub async fn create(
     .await
 }
 
+pub async fn create_first_admin(
+    pool: &SqlitePool,
+    email: &str,
+    password_hash: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as(
+        "INSERT INTO users (id, email, password_hash, role) \
+         SELECT ?, ?, ?, 'admin' WHERE NOT EXISTS (SELECT 1 FROM users) \
+         RETURNING id, email, password_hash, role",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(email)
+    .bind(password_hash)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn find_by_email(pool: &SqlitePool, email: &str) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as("SELECT id, email, password_hash, role FROM users WHERE email = ?")
         .bind(email)
@@ -88,6 +105,15 @@ mod tests {
         let (pool, _dir) = pool().await;
         assert_eq!(count(&pool).await.unwrap(), 0);
         create(&pool, "a@b.c", "hash", "admin").await.unwrap();
+        assert_eq!(count(&pool).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_first_admin_only_works_on_an_empty_table() {
+        let (pool, _dir) = pool().await;
+        let first = create_first_admin(&pool, "a@b.c", "hash").await.unwrap();
+        assert_eq!(first.unwrap().role, "admin");
+        assert!(create_first_admin(&pool, "d@e.f", "hash").await.unwrap().is_none());
         assert_eq!(count(&pool).await.unwrap(), 1);
     }
 
