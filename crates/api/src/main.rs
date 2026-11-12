@@ -1,5 +1,5 @@
 use sw_api::{AppState, router};
-use sw_infrastructure::{config::Config, db, telemetry};
+use sw_infrastructure::{config::Config, db, shutdown, telemetry};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,12 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, "api démarrée");
     axum::serve(listener, router(AppState::new(pool, &config.jwt_secret)))
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(shutdown::signal())
         .await?;
     Ok(())
-}
-
-async fn shutdown() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("arrêt demandé");
 }

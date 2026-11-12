@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use sw_infrastructure::{config::Config, db, telemetry};
+use sw_infrastructure::{config::Config, db, shutdown, telemetry};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,9 +11,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let pool = db::open(&config.database_path).await?;
     tracing::info!("worker démarré");
-    sw_worker::run(pool, Duration::from_millis(500), async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await;
+    sw_worker::run(pool, Duration::from_millis(500), shutdown::signal()).await;
     Ok(())
 }
