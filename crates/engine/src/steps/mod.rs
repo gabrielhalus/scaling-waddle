@@ -1,6 +1,11 @@
+pub mod http;
+
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use crate::expr;
+use crate::netguard::Policy;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepOutcome {
@@ -17,13 +22,43 @@ impl StepOutcome {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Services {}
+#[derive(Debug, Clone)]
+pub struct Integration {
+    pub base_url: String,
+    pub headers: BTreeMap<String, String>,
+}
 
-pub async fn execute(kind: &str, with: &Value, vars: &Value, _services: &Services) -> StepOutcome {
+#[derive(Debug, Clone)]
+pub struct Services {
+    policy: Policy,
+    integrations: BTreeMap<String, Integration>,
+    client: Option<reqwest::Client>,
+}
+
+impl Services {
+    pub fn new(policy: Policy, integrations: BTreeMap<String, Integration>) -> Self {
+        let client = http::build_client(&policy)
+            .inspect_err(|err| tracing::error!(%err, "client HTTP indisponible"))
+            .ok();
+        Self {
+            policy,
+            integrations,
+            client,
+        }
+    }
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Self::new(Policy::default(), BTreeMap::new())
+    }
+}
+
+pub async fn execute(kind: &str, with: &Value, vars: &Value, services: &Services) -> StepOutcome {
     match kind {
         "condition" => condition(with, vars),
         "transform" => transform(with, vars),
+        "http.request" => http::execute(with, vars, services).await,
         other => StepOutcome::fatal(format!("type d'étape non implémenté: {other}")),
     }
 }
