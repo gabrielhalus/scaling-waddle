@@ -46,7 +46,7 @@ mod tests {
         let db = sw_infrastructure::db::open(&dir.path().join("sw.db"))
             .await
             .unwrap();
-        let state = AppState { db };
+        let state = AppState::new(db, "0123456789abcdef0123456789abcdef");
         (router(state.clone()), state, dir)
     }
 

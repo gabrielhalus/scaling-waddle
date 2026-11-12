@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::open(&config.database_path).await?;
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, "api démarrée");
-    axum::serve(listener, router(AppState { db: pool }))
+    axum::serve(listener, router(AppState::new(pool, &config.jwt_secret)))
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())

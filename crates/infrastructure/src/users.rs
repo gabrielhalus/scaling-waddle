@@ -113,7 +113,12 @@ mod tests {
         let (pool, _dir) = pool().await;
         let first = create_first_admin(&pool, "a@b.c", "hash").await.unwrap();
         assert_eq!(first.unwrap().role, "admin");
-        assert!(create_first_admin(&pool, "d@e.f", "hash").await.unwrap().is_none());
+        assert!(
+            create_first_admin(&pool, "d@e.f", "hash")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(count(&pool).await.unwrap(), 1);
     }
 
