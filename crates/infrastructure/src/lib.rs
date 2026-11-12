@@ -7,4 +7,5 @@ pub mod runs;
 pub mod shutdown;
 pub mod telemetry;
 pub mod users;
+pub mod webhook_tokens;
 pub mod workflows;
