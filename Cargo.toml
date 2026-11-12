@@ -24,6 +24,7 @@ jsonwebtoken = "9"
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
+serde_yaml_ng = "0.10"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
