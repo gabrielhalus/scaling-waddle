@@ -5,12 +5,15 @@ use std::path::PathBuf;
 pub struct Config {
     pub database_path: PathBuf,
     pub bind: SocketAddr,
+    pub jwt_secret: String,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("SW_BIND invalide: {0}")]
     Bind(String),
+    #[error("SW_JWT_SECRET absent ou de moins de 32 caractères")]
+    JwtSecret,
 }
 
 impl Config {
@@ -20,10 +23,14 @@ impl Config {
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let bind = lookup("SW_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_owned());
+        let jwt_secret = lookup("SW_JWT_SECRET")
+            .filter(|secret| secret.len() >= 32)
+            .ok_or(ConfigError::JwtSecret)?;
         Ok(Self {
             database_path: lookup("SW_DATABASE_PATH")
                 .map_or_else(|| PathBuf::from("data/scaling-waddle.db"), PathBuf::from),
             bind: bind.parse().map_err(|_| ConfigError::Bind(bind))?,
+            jwt_secret,
         })
     }
 }
@@ -32,9 +39,15 @@ impl Config {
 mod tests {
     use super::*;
 
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+    fn only_secret(key: &str) -> Option<String> {
+        (key == "SW_JWT_SECRET").then(|| SECRET.to_owned())
+    }
+
     #[test]
-    fn defaults_apply_without_environment() {
-        let config = Config::from_lookup(|_| None).unwrap();
+    fn defaults_apply_with_only_the_secret() {
+        let config = Config::from_lookup(only_secret).unwrap();
         assert_eq!(config.bind, "127.0.0.1:8080".parse().unwrap());
         assert_eq!(
             config.database_path,
@@ -47,7 +60,7 @@ mod tests {
         let config = Config::from_lookup(|key| match key {
             "SW_BIND" => Some("0.0.0.0:9000".to_owned()),
             "SW_DATABASE_PATH" => Some("/var/lib/sw.db".to_owned()),
-            _ => None,
+            other => only_secret(other),
         })
         .unwrap();
         assert_eq!(config.bind.port(), 9000);
@@ -56,7 +69,25 @@ mod tests {
 
     #[test]
     fn invalid_bind_is_rejected() {
-        let result = Config::from_lookup(|key| (key == "SW_BIND").then(|| "nope".to_owned()));
+        let result = Config::from_lookup(|key| match key {
+            "SW_BIND" => Some("nope".to_owned()),
+            other => only_secret(other),
+        });
         assert!(matches!(result, Err(ConfigError::Bind(_))));
+    }
+
+    #[test]
+    fn missing_secret_is_rejected() {
+        assert!(matches!(
+            Config::from_lookup(|_| None),
+            Err(ConfigError::JwtSecret)
+        ));
+    }
+
+    #[test]
+    fn short_secret_is_rejected() {
+        let result =
+            Config::from_lookup(|key| (key == "SW_JWT_SECRET").then(|| "court".to_owned()));
+        assert!(matches!(result, Err(ConfigError::JwtSecret)));
     }
 }
