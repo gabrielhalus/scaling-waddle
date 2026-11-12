@@ -1,0 +1,20 @@
+defaults:
+  env:
+    SW_JWT_SECRET: dev-secret-dev-secret-dev-secret-dev
+    SW_DATABASE_PATH: data/scaling-waddle.db
+
+tasks:
+  api:
+    cmd: ["cargo", "run", "-p", "sw-api"]
+    ready: {http: "http://127.0.0.1:8080/health/live"}
+    autostart: true
+
+  worker:
+    cmd: ["cargo", "run", "-p", "sw-worker"]
+    deps: [api]
+    autostart: true
+
+  web:
+    cmd: ["pnpm", "--filter", "web", "dev"]
+    deps: [api]
+    autostart: true
