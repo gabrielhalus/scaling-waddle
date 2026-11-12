@@ -1,5 +1,6 @@
 pub mod config;
 pub mod db;
+pub mod integrations;
 pub mod jwt;
 pub mod password;
 pub mod refresh_tokens;

@@ -56,6 +56,16 @@ pub struct StepRun {
     pub attempts: i64,
     pub output: Option<String>,
     pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRecord {
+    pub source: String,
+    pub kind: String,
+    pub payload: Value,
+    pub correlation_id: String,
 }
 
 const RUN_COLUMNS: &str = "id, workflow_id, version, event_id, status, error, lease_owner, lease_expires_at, created_at, finished_at";
@@ -216,9 +226,68 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Run>, sqlx::Error
         .await
 }
 
+pub async fn event_of(pool: &SqlitePool, event_id: &str) -> Result<Option<EventRecord>, RunError> {
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("SELECT source, type, payload, correlation_id FROM events WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await?;
+    row.map(|(source, kind, payload, correlation_id)| {
+        Ok(EventRecord {
+            source,
+            kind,
+            payload: serde_json::from_str(&payload)?,
+            correlation_id,
+        })
+    })
+    .transpose()
+}
+
+pub async fn set_step(
+    pool: &SqlitePool,
+    run_id: &str,
+    step_id: &str,
+    status: &str,
+    output: Option<&Value>,
+    error: Option<&str>,
+    attempts: i64,
+) -> Result<(), RunError> {
+    let updated = sqlx::query(
+        "UPDATE step_runs SET status = ?3, output = ?4, error = ?5, attempts = ?6, \
+         started_at = CASE WHEN ?3 = 'running' AND started_at IS NULL \
+             THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE started_at END, \
+         finished_at = CASE WHEN ?3 IN ('succeeded', 'failed', 'skipped', 'cancelled') \
+             THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE finished_at END \
+         WHERE run_id = ?1 AND step_id = ?2",
+    )
+    .bind(run_id)
+    .bind(step_id)
+    .bind(status)
+    .bind(output.map(Value::to_string))
+    .bind(error)
+    .bind(attempts)
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(RunError::NotFound);
+    }
+    Ok(())
+}
+
+pub async fn reset_running_steps(pool: &SqlitePool, run_id: &str) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE step_runs SET status = 'pending' WHERE run_id = ? AND status = 'running'",
+    )
+    .bind(run_id)
+    .execute(pool)
+    .await?
+    .rows_affected())
+}
+
 pub async fn steps(pool: &SqlitePool, run_id: &str) -> Result<Vec<StepRun>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT step_id, status, attempts, output, error FROM step_runs WHERE run_id = ? ORDER BY rowid",
+        "SELECT step_id, status, attempts, output, error, started_at, finished_at FROM step_runs \
+         WHERE run_id = ? ORDER BY rowid",
     )
     .bind(run_id)
     .fetch_all(pool)
@@ -399,6 +468,87 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn event_returns_the_stored_payload_and_metadata() {
+        let (pool, wf, _dir) = setup().await;
+        let ingested = ingest(&pool, &event(&wf, None)).await.unwrap();
+        let stored = event_of(&pool, &ingested.event_id).await.unwrap().unwrap();
+        assert_eq!(stored.payload, json!({ "n": 1 }));
+        assert_eq!(
+            (stored.source.as_str(), stored.kind.as_str()),
+            ("manual", "run")
+        );
+        assert_eq!(stored.correlation_id, "corr-1");
+        assert!(event_of(&pool, "nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn set_step_records_status_output_error_and_timestamps() {
+        let (pool, wf, _dir) = setup().await;
+        let run_id = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        set_step(&pool, &run_id, "a", "running", None, None, 1)
+            .await
+            .unwrap();
+        let running = &steps(&pool, &run_id).await.unwrap()[0];
+        assert_eq!((running.status.as_str(), running.attempts), ("running", 1));
+        assert!(running.started_at.is_some() && running.finished_at.is_none());
+
+        set_step(
+            &pool,
+            &run_id,
+            "a",
+            "succeeded",
+            Some(&json!({ "ok": 1 })),
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+        let done = &steps(&pool, &run_id).await.unwrap()[0];
+        assert_eq!(done.output.as_deref(), Some("{\"ok\":1}"));
+        assert!(done.finished_at.is_some());
+
+        set_step(&pool, &run_id, "b", "failed", None, Some("boom"), 3)
+            .await
+            .unwrap();
+        let failed = &steps(&pool, &run_id).await.unwrap()[1];
+        assert_eq!(
+            (failed.error.as_deref(), failed.attempts),
+            (Some("boom"), 3)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_step_rejects_unknown_steps() {
+        let (pool, wf, _dir) = setup().await;
+        let run_id = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        assert!(
+            set_step(&pool, &run_id, "ghost", "running", None, None, 1)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_running_steps_requeues_only_interrupted_work() {
+        let (pool, wf, _dir) = setup().await;
+        let run_id = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        set_step(&pool, &run_id, "a", "succeeded", None, None, 1)
+            .await
+            .unwrap();
+        set_step(&pool, &run_id, "b", "running", None, None, 1)
+            .await
+            .unwrap();
+        assert_eq!(reset_running_steps(&pool, &run_id).await.unwrap(), 1);
+        let statuses: Vec<String> = steps(&pool, &run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.status)
+            .collect();
+        assert_eq!(statuses, ["succeeded", "pending"]);
     }
 
     #[tokio::test]
