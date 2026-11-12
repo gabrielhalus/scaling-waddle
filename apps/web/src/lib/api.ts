@@ -2,6 +2,8 @@ export type Tokens = { access: string; refresh: string }
 
 export type User = { id: string; email: string; role: 'admin' | 'operator' | 'viewer' }
 
+export type Health = { status: 'ok' | 'unavailable'; database: 'ok' | 'down' }
+
 type TokenResponse = { access_token: string; refresh_token: string; expires_in: number }
 
 export type TokenStorage = {
@@ -120,6 +122,10 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
       } finally {
         storage.set(null)
       }
+    },
+    health: async (): Promise<Health> => {
+      const res = await send('/health/ready', {}, false)
+      return (await res.json()) as Health
     },
     isAuthenticated: () => storage.get() !== null,
   }

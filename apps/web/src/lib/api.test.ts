@@ -95,4 +95,21 @@ describe('api client', () => {
 
     expect(storage.get()).toBeNull()
   })
+
+  it('reads readiness without credentials', async () => {
+    const storage = memoryStorage({ access: 'a1', refresh: 'r1' })
+    const fetchMock = vi.fn().mockResolvedValue(json(200, { status: 'ok', database: 'ok' }))
+    const client = createClient({ fetch: fetchMock, storage })
+
+    expect(await client.health()).toEqual({ status: 'ok', database: 'ok' })
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(new Headers(init.headers).has('authorization')).toBe(false)
+  })
+
+  it('reports a 503 readiness as unavailable instead of throwing', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(503, { status: 'unavailable', database: 'down' }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    expect(await client.health()).toEqual({ status: 'unavailable', database: 'down' })
+  })
 })
