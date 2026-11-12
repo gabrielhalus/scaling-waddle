@@ -63,6 +63,26 @@ pub struct Step {
     pub condition: Option<String>,
     #[serde(default)]
     pub with: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryPolicy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    #[serde(default = "default_backoff_seconds")]
+    pub backoff_seconds: u64,
+}
+
+fn default_backoff_seconds() -> u64 {
+    1
+}
+
+impl Step {
+    pub fn max_attempts(&self) -> u32 {
+        self.retry.map_or(1, |retry| retry.max_attempts)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -79,6 +99,8 @@ pub enum ValidationError {
     InvalidStepId(String),
     #[error("identifiant d'étape en double: {0}")]
     DuplicateStepId(String),
+    #[error("politique de retry invalide pour {0} (1 à 10 tentatives, délai de 1 à 3600 s)")]
+    InvalidRetry(String),
     #[error("type d'étape inconnu pour {step}: {step_type}")]
     UnknownStepType { step: String, step_type: String },
     #[error("l'étape {step} dépend d'une étape inconnue: {needs}")]
@@ -141,6 +163,12 @@ impl Workflow {
                 errors.push(ValidationError::InvalidStepId(step.id.clone()));
             } else if !ids.insert(step.id.clone()) {
                 errors.push(ValidationError::DuplicateStepId(step.id.clone()));
+            }
+            if step.retry.is_some_and(|retry| {
+                !(1..=10).contains(&retry.max_attempts)
+                    || !(1..=3600).contains(&retry.backoff_seconds)
+            }) {
+                errors.push(ValidationError::InvalidRetry(step.id.clone()));
             }
             if !is_known_type(&step.kind) {
                 errors.push(ValidationError::UnknownStepType {
@@ -517,6 +545,41 @@ spec:
                 reference: "ghost".into()
             }])
         );
+    }
+
+    #[test]
+    fn retry_policy_parses_with_defaults() {
+        let workflow = parse_yaml(&with_steps(
+            "    - {id: a, type: delay, retry: {max_attempts: 3}}\n    \
+             - {id: b, type: delay, retry: {max_attempts: 2, backoff_seconds: 5}}\n    - {id: c, type: delay}\n",
+        ));
+        assert!(workflow.validate().is_ok());
+        let a = workflow.spec.steps[0].retry.unwrap();
+        assert_eq!((a.max_attempts, a.backoff_seconds), (3, 1));
+        let b = workflow.spec.steps[1].retry.unwrap();
+        assert_eq!((b.max_attempts, b.backoff_seconds), (2, 5));
+        assert!(workflow.spec.steps[2].retry.is_none());
+        assert_eq!(workflow.spec.steps[2].max_attempts(), 1);
+        assert_eq!(workflow.spec.steps[0].max_attempts(), 3);
+    }
+
+    #[test]
+    fn retry_bounds_are_enforced() {
+        for retry in [
+            "{max_attempts: 0}",
+            "{max_attempts: 11}",
+            "{max_attempts: 2, backoff_seconds: 0}",
+            "{max_attempts: 2, backoff_seconds: 4000}",
+        ] {
+            let workflow = parse_yaml(&with_steps(&format!(
+                "    - {{id: a, type: delay, retry: {retry}}}\n"
+            )));
+            assert_eq!(
+                workflow.validate(),
+                Err(vec![ValidationError::InvalidRetry("a".into())]),
+                "{retry}"
+            );
+        }
     }
 
     #[test]
