@@ -19,6 +19,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -31,3 +37,9 @@ todo = "deny"
 unimplemented = "deny"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
