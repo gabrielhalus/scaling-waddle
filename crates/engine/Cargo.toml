@@ -10,5 +10,8 @@ serde_json.workspace = true
 sw-domain = { path = "../domain" }
 thiserror.workspace = true
 
+[dev-dependencies]
+tokio.workspace = true
+
 [lints]
 workspace = true

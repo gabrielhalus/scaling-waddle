@@ -1,0 +1,140 @@
+use serde_json::{Value, json};
+
+use crate::expr;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StepOutcome {
+    Succeeded(Value),
+    Failed { error: String, retryable: bool },
+}
+
+impl StepOutcome {
+    pub fn fatal(error: impl Into<String>) -> Self {
+        Self::Failed {
+            error: error.into(),
+            retryable: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Services {}
+
+pub async fn execute(kind: &str, with: &Value, vars: &Value, _services: &Services) -> StepOutcome {
+    match kind {
+        "condition" => condition(with, vars),
+        "transform" => transform(with, vars),
+        other => StepOutcome::fatal(format!("type d'étape non implémenté: {other}")),
+    }
+}
+
+fn condition(with: &Value, vars: &Value) -> StepOutcome {
+    let Some(expression) = with.get("expression").and_then(Value::as_str) else {
+        return StepOutcome::fatal("`with.expression` est requis et doit être une chaîne");
+    };
+    match expr::evaluate_bool(expression, vars) {
+        Ok(result) => StepOutcome::Succeeded(json!({ "result": result })),
+        Err(err) => StepOutcome::fatal(err.to_string()),
+    }
+}
+
+fn transform(with: &Value, vars: &Value) -> StepOutcome {
+    let Some(value) = with.get("value") else {
+        return StepOutcome::fatal("`with.value` est requis");
+    };
+    match expr::render(value, vars) {
+        Ok(rendered) => StepOutcome::Succeeded(json!({ "value": rendered })),
+        Err(err) => StepOutcome::fatal(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn vars() -> Value {
+        json!({ "event": { "payload": { "service": "api", "count": 3 } }, "steps": {} })
+    }
+
+    async fn run(kind: &str, with: Value) -> StepOutcome {
+        execute(kind, &with, &vars(), &Services::default()).await
+    }
+
+    fn failed(outcome: &StepOutcome) -> (&str, bool) {
+        match outcome {
+            StepOutcome::Failed { error, retryable } => (error.as_str(), *retryable),
+            StepOutcome::Succeeded(_) => panic!("succès inattendu"),
+        }
+    }
+
+    #[tokio::test]
+    async fn condition_outputs_its_boolean_result() {
+        let yes = run(
+            "condition",
+            json!({ "expression": "event.payload.count == 3" }),
+        )
+        .await;
+        assert_eq!(yes, StepOutcome::Succeeded(json!({ "result": true })));
+        let no = run(
+            "condition",
+            json!({ "expression": "event.payload.count > 3" }),
+        )
+        .await;
+        assert_eq!(no, StepOutcome::Succeeded(json!({ "result": false })));
+    }
+
+    #[tokio::test]
+    async fn condition_failures_are_not_retryable() {
+        for with in [
+            json!({}),
+            json!({ "expression": 12 }),
+            json!({ "expression": "event.payload.count" }),
+            json!({ "expression": "nope.field" }),
+            json!({ "expression": "event.payload." }),
+        ] {
+            let outcome = run("condition", with.clone()).await;
+            assert!(!failed(&outcome).1, "{with} ne doit pas être rejouable");
+        }
+    }
+
+    #[tokio::test]
+    async fn transform_renders_templates_into_value() {
+        let outcome = run(
+            "transform",
+            json!({ "value": { "service": "${{ event.payload.service }}", "n": "${{ event.payload.count }}" } }),
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            StepOutcome::Succeeded(json!({ "value": { "service": "api", "n": 3 } }))
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_requires_a_value_and_valid_templates() {
+        let missing = run("transform", json!({})).await;
+        assert!(!failed(&missing).1);
+        let broken = run("transform", json!({ "value": "${{ nope.field }}" })).await;
+        assert!(!failed(&broken).1);
+    }
+
+    #[tokio::test]
+    async fn unimplemented_types_fail_without_retry() {
+        for kind in [
+            "delay",
+            "approval",
+            "notification",
+            "agent.run",
+            "script.run",
+            "integration.x.y",
+            "bogus",
+        ] {
+            let outcome = run(kind, json!({})).await;
+            let (error, retryable) = failed(&outcome);
+            assert!(error.contains(kind));
+            assert!(!retryable);
+        }
+    }
+}
