@@ -35,31 +35,58 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
     },
     component: function Shell() {
       return (
-        <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 p-6">
-          <nav className="flex gap-4 text-sm">
-            <Link to="/" activeOptions={{ exact: true }} className="[&.active]:font-semibold">
-              Overview
-            </Link>
-            <Link to="/workflows" className="[&.active]:font-semibold">
-              Workflows
-            </Link>
-            <Link to="/runs" className="[&.active]:font-semibold">
-              Runs
-            </Link>
-            <Link to="/approvals" className="[&.active]:font-semibold">
-              Approbations
-            </Link>
-            <Link to="/integrations" className="[&.active]:font-semibold">
-              Intégrations
-            </Link>
-            <Link to="/audit" className="[&.active]:font-semibold">
-              Audit
-            </Link>
-            <Link to="/settings" className="[&.active]:font-semibold">
-              Réglages
-            </Link>
-          </nav>
-          <main>
+        <div className="min-h-screen">
+          <header className="border-b bg-card">
+            <div className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3">
+              <span className="text-sm font-semibold">scaling-waddle</span>
+              <nav className="flex flex-wrap gap-1 text-sm">
+                <Link
+                  to="/"
+                  activeOptions={{ exact: true }}
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Overview
+                </Link>
+                <Link
+                  to="/workflows"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Workflows
+                </Link>
+                <Link
+                  to="/runs"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Runs
+                </Link>
+                <Link
+                  to="/approvals"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Approbations
+                </Link>
+                <Link
+                  to="/integrations"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Intégrations
+                </Link>
+                <Link
+                  to="/audit"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Audit
+                </Link>
+                <Link
+                  to="/settings"
+                  className="rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:text-foreground [&.active]:bg-muted [&.active]:font-medium [&.active]:text-foreground"
+                >
+                  Réglages
+                </Link>
+              </nav>
+            </div>
+          </header>
+          <main className="mx-auto max-w-5xl p-6">
             <Outlet />
           </main>
         </div>

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useClient } from '../lib/client-context'
+import { inputClass, outlineButton, primaryButton } from '../components/ui/styles'
 
 function ImportForm({ onOpen }: { onOpen: (workflowId: string) => void }) {
   const client = useClient()
@@ -26,14 +27,14 @@ function ImportForm({ onOpen }: { onOpen: (workflowId: string) => void }) {
       <label className="flex flex-col gap-1 text-xs">
         Définition (YAML)
         <textarea
-          className="h-40 rounded border border-neutral-300 px-2 py-1 font-mono text-sm"
+          className={`${inputClass} h-40 font-mono`}
           value={text}
           onChange={(event) => setText(event.target.value)}
         />
       </label>
       <button
         type="submit"
-        className="self-start rounded border border-neutral-300 px-3 py-1 text-xs"
+        className={`${primaryButton} self-start`}
       >
         Importer
       </button>
@@ -58,18 +59,18 @@ export function WorkflowsPage({ onOpenRuns, onOpen }: Props) {
       <h1 className="text-2xl font-semibold">Workflows</h1>
       {workflows.isError && <p className="text-red-600">Chargement impossible.</p>}
       {workflows.data?.length === 0 && (
-        <p className="text-sm text-neutral-600">Aucun workflow pour le moment.</p>
+        <p className="text-sm text-muted-foreground">Aucun workflow pour le moment.</p>
       )}
-      <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+      <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
         {workflows.data?.map((workflow) => (
           <li key={workflow.id} className="flex items-center justify-between gap-4 p-3 text-sm">
             <div className="flex flex-col gap-0.5 text-left">
               <button type="button" onClick={() => onOpen(workflow.id)} className="text-left font-medium">
                 {workflow.name}
               </button>
-              <span className="text-xs text-neutral-500">{workflow.project}</span>
+              <span className="text-xs text-muted-foreground">{workflow.project}</span>
             </div>
-            <span className="text-xs whitespace-nowrap text-neutral-600">
+            <span className="text-xs whitespace-nowrap text-muted-foreground">
               {workflow.active_version === null
                 ? `inactif · v${workflow.latest_version} dernière`
                 : `v${workflow.active_version} active · v${workflow.latest_version} dernière`}
@@ -77,7 +78,7 @@ export function WorkflowsPage({ onOpenRuns, onOpen }: Props) {
             <button
               type="button"
               onClick={() => onOpenRuns(workflow.id)}
-              className="rounded border border-neutral-300 px-3 py-1 text-xs whitespace-nowrap"
+              className={outlineButton}
             >
               Voir les runs
             </button>

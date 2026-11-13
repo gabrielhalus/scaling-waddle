@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { StatusBadge } from '../components/status-badge'
 import type { Approval } from '../lib/api'
 import { useClient } from '../lib/client-context'
+import { inputClass, outlineButton, dangerButton } from '../components/ui/styles'
 
 function Request({ approval, canDecide, onOpenRun }: {
   approval: Approval
@@ -25,14 +26,14 @@ function Request({ approval, canDecide, onOpenRun }: {
         <span className="font-medium">{approval.message ?? approval.step_id}</span>
         <StatusBadge status={approval.status} />
       </div>
-      <div className="flex items-center gap-3 text-xs text-neutral-500">
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <button type="button" onClick={() => onOpenRun(approval.run_id)} className="font-mono">
           {approval.run_id}
         </button>
         <span className="whitespace-nowrap">{approval.requested_at}</span>
         {approval.decided_by && <span>par {approval.decided_by}</span>}
       </div>
-      {approval.comment && <p className="text-xs text-neutral-600">{approval.comment}</p>}
+      {approval.comment && <p className="text-xs text-muted-foreground">{approval.comment}</p>}
       {canDecide && approval.status === 'pending' && (
         <div className="flex items-center gap-2">
           <label className="flex flex-1 items-center gap-2 text-xs">
@@ -40,20 +41,20 @@ function Request({ approval, canDecide, onOpenRun }: {
             <input
               value={comment}
               onChange={(event) => setComment(event.target.value)}
-              className="flex-1 rounded border border-neutral-300 px-2 py-1"
+              className={`${inputClass} flex-1`}
             />
           </label>
           <button
             type="button"
             onClick={() => decide.mutate('approve')}
-            className="rounded border border-neutral-300 px-3 py-1 text-xs"
+            className={outlineButton}
           >
             Approuver
           </button>
           <button
             type="button"
             onClick={() => decide.mutate('reject')}
-            className="rounded border border-neutral-300 px-3 py-1 text-xs"
+            className={dangerButton}
           >
             Refuser
           </button>
@@ -82,14 +83,14 @@ export function ApprovalsPage({ onOpenRun }: { onOpenRun: (id: string) => void }
         <button
           type="button"
           onClick={() => setHistory((value) => !value)}
-          className="rounded border border-neutral-300 px-3 py-1 text-xs"
+          className={outlineButton}
         >
           {history ? 'En attente' : 'Historique'}
         </button>
       </div>
       {approvals.isError && <p className="text-red-600">Chargement impossible.</p>}
-      {approvals.data?.length === 0 && <p className="text-sm text-neutral-600">Aucune demande.</p>}
-      <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+      {approvals.data?.length === 0 && <p className="text-sm text-muted-foreground">Aucune demande.</p>}
+      <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
         {approvals.data?.map((approval) => (
           <Request
             key={approval.id}

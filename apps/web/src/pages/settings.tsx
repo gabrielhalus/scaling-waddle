@@ -3,9 +3,8 @@ import { useState } from 'react'
 
 import type { ManagedUser, User } from '../lib/api'
 import { useClient } from '../lib/client-context'
+import { inputClass, primaryButton, dangerButton } from '../components/ui/styles'
 
-const input = 'rounded border border-neutral-300 px-2 py-1 text-sm'
-const button = 'rounded border border-neutral-300 px-3 py-1 text-xs whitespace-nowrap'
 const ROLES: User['role'][] = ['admin', 'operator', 'viewer']
 
 function UserRow({ user, self }: { user: ManagedUser; self: boolean }) {
@@ -29,7 +28,7 @@ function UserRow({ user, self }: { user: ManagedUser; self: boolean }) {
         <span className="font-medium">{user.email}</span>
         <select
           aria-label={`Rôle de ${user.email}`}
-          className={input}
+          className={inputClass}
           value={user.role}
           disabled={self}
           onChange={(event) => changeRole.mutate(event.target.value as User['role'])}
@@ -43,7 +42,7 @@ function UserRow({ user, self }: { user: ManagedUser; self: boolean }) {
         {!self && (
           <button
             type="button"
-            className={button}
+            className={dangerButton}
             aria-label={`Supprimer ${user.email}`}
             onClick={() => remove.mutate()}
           >
@@ -62,13 +61,13 @@ function UserRow({ user, self }: { user: ManagedUser; self: boolean }) {
           type="password"
           autoComplete="new-password"
           aria-label={`Nouveau mot de passe de ${user.email}`}
-          className={`${input} flex-1`}
+          className={`${inputClass} flex-1`}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
         />
         <button
           type="submit"
-          className={button}
+          className={primaryButton}
           aria-label={`Changer le mot de passe de ${user.email}`}
         >
           Changer
@@ -105,12 +104,12 @@ function CreateUser() {
     >
       <label className="flex flex-1 flex-col gap-1 text-xs">
         E-mail
-        <input className={input} value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} />
       </label>
       <label className="flex flex-1 flex-col gap-1 text-xs">
         Mot de passe
         <input
-          className={input}
+          className={inputClass}
           type="password"
           autoComplete="new-password"
           value={password}
@@ -120,7 +119,7 @@ function CreateUser() {
       <label className="flex flex-col gap-1 text-xs">
         Rôle
         <select
-          className={input}
+          className={inputClass}
           value={role}
           onChange={(e) => setRole(e.target.value as User['role'])}
         >
@@ -131,7 +130,7 @@ function CreateUser() {
           ))}
         </select>
       </label>
-      <button type="submit" className={button}>
+      <button type="submit" className={primaryButton}>
         Créer l’utilisateur
       </button>
       {create.isError && (
@@ -148,11 +147,11 @@ function Rotation() {
   const rotate = useMutation({ mutationFn: client.rotateSecrets })
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-xs text-neutral-500">
+      <p className="text-xs text-muted-foreground">
         À lancer après avoir changé <code>SW_SECRET_ACTIVE_KEY</code> : rechiffre les secrets avec la clé
         active.
       </p>
-      <button type="button" className={`${button} self-start`} onClick={() => rotate.mutate()}>
+      <button type="button" className={`${primaryButton} self-start`} onClick={() => rotate.mutate()}>
         Rechiffrer les secrets
       </button>
       {rotate.data && <p className="text-xs">{rotate.data.rotated} secret(s) rechiffré(s).</p>}
@@ -168,7 +167,7 @@ function Admin({ selfId }: { selfId: string }) {
     <div className="flex flex-col gap-10">
       <section className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold">Utilisateurs</h1>
-        <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+        <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
           {users.data?.map((user) => <UserRow key={user.id} user={user} self={user.id === selfId} />)}
         </ul>
         <CreateUser />
@@ -186,7 +185,7 @@ export function SettingsPage() {
   const me = useQuery({ queryKey: ['me'], queryFn: client.me })
   if (!me.data) return null
   if (me.data.role !== 'admin') {
-    return <p className="text-sm text-neutral-600">Réservé aux administrateurs.</p>
+    return <p className="text-sm text-muted-foreground">Réservé aux administrateurs.</p>
   }
   return <Admin selfId={me.data.id} />
 }

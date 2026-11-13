@@ -2,9 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useClient } from '../lib/client-context'
+import { inputClass, dangerButton, primaryButton } from '../components/ui/styles'
 
-const input = 'rounded border border-neutral-300 px-2 py-1 text-sm'
-const button = 'rounded border border-neutral-300 px-3 py-1 text-xs whitespace-nowrap'
 
 function IntegrationForm() {
   const client = useClient()
@@ -32,17 +31,17 @@ function IntegrationForm() {
     >
       <label className="flex flex-col gap-1 text-xs">
         Projet
-        <input className={input} value={project} onChange={(e) => setProject(e.target.value)} />
+        <input className={inputClass} value={project} onChange={(e) => setProject(e.target.value)} />
       </label>
       <label className="flex flex-col gap-1 text-xs">
         Nom
-        <input className={input} value={name} onChange={(e) => setName(e.target.value)} />
+        <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="flex flex-1 flex-col gap-1 text-xs">
         URL de base
-        <input className={input} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <input className={inputClass} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
       </label>
-      <button type="submit" className={button}>
+      <button type="submit" className={primaryButton}>
         Créer l’intégration
       </button>
       {create.isError && <p className="w-full text-xs text-red-600">Création refusée.</p>}
@@ -74,23 +73,23 @@ function SecretForm() {
     >
       <label className="flex flex-col gap-1 text-xs">
         Projet du secret
-        <input className={input} value={project} onChange={(e) => setProject(e.target.value)} />
+        <input className={inputClass} value={project} onChange={(e) => setProject(e.target.value)} />
       </label>
       <label className="flex flex-col gap-1 text-xs">
         Nom du secret
-        <input className={input} value={name} onChange={(e) => setName(e.target.value)} />
+        <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="flex flex-1 flex-col gap-1 text-xs">
         Valeur
         <input
-          className={input}
+          className={inputClass}
           type="password"
           autoComplete="off"
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
       </label>
-      <button type="submit" className={button}>
+      <button type="submit" className={primaryButton}>
         Enregistrer le secret
       </button>
       {save.isError && <p className="w-full text-xs text-red-600">Enregistrement refusé.</p>}
@@ -120,17 +119,17 @@ export function IntegrationsPage() {
       <section className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold">Intégrations</h1>
         {integrations.data?.length === 0 && (
-          <p className="text-sm text-neutral-600">Aucune intégration.</p>
+          <p className="text-sm text-muted-foreground">Aucune intégration.</p>
         )}
-        <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+        <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
           {integrations.data?.map((item) => (
             <li key={item.id} className="flex items-start justify-between gap-4 p-3 text-sm">
               <div className="flex flex-col gap-1">
                 <span className="font-medium">{item.name}</span>
-                <span className="text-xs text-neutral-500">{item.project}</span>
+                <span className="text-xs text-muted-foreground">{item.project}</span>
                 <span className="font-mono text-xs">{item.base_url}</span>
                 {Object.entries(item.headers).map(([header, shown]) => (
-                  <span key={header} className="font-mono text-xs text-neutral-600">
+                  <span key={header} className="font-mono text-xs text-muted-foreground">
                     {header}: {shown}
                   </span>
                 ))}
@@ -140,7 +139,7 @@ export function IntegrationsPage() {
                   type="button"
                   aria-label={`Supprimer ${item.name}`}
                   onClick={() => removeIntegration.mutate(item.id)}
-                  className={button}
+                  className={dangerButton}
                 >
                   Supprimer
                 </button>
@@ -153,12 +152,12 @@ export function IntegrationsPage() {
 
       <section className="flex flex-col gap-4">
         <h2 className="text-xl font-semibold">Secrets</h2>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-muted-foreground">
           Référencés dans les en-têtes par <code>{'${secret:nom}'}</code> ; les valeurs ne sont jamais
           affichées.
         </p>
-        {secrets.data?.length === 0 && <p className="text-sm text-neutral-600">Aucun secret.</p>}
-        <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+        {secrets.data?.length === 0 && <p className="text-sm text-muted-foreground">Aucun secret.</p>}
+        <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
           {secrets.data?.map((item) => (
             <li
               key={`${item.project}/${item.name}`}
@@ -166,15 +165,15 @@ export function IntegrationsPage() {
             >
               <div className="flex flex-col gap-0.5">
                 <span className="font-medium">{item.name}</span>
-                <span className="text-xs text-neutral-500">{item.project}</span>
+                <span className="text-xs text-muted-foreground">{item.project}</span>
               </div>
-              <span className="text-xs whitespace-nowrap text-neutral-500">clé {item.key_id}</span>
+              <span className="text-xs whitespace-nowrap text-muted-foreground">clé {item.key_id}</span>
               {canWrite && (
                 <button
                   type="button"
                   aria-label={`Supprimer le secret ${item.name}`}
                   onClick={() => removeSecret.mutate(item)}
-                  className={button}
+                  className={dangerButton}
                 >
                   Supprimer
                 </button>

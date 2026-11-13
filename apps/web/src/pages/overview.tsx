@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 
 import { StatusBadge } from '../components/status-badge'
 import { useClient } from '../lib/client-context'
+import { outlineButton } from '../components/ui/styles'
 
 export function OverviewPage({
   onLogout,
@@ -34,7 +35,7 @@ export function OverviewPage({
         <button
           type="button"
           onClick={() => logout.mutate()}
-          className="rounded border border-neutral-300 px-3 py-1.5 text-sm"
+          className={outlineButton}
         >
           Se déconnecter
         </button>
@@ -43,7 +44,7 @@ export function OverviewPage({
         {me.data && (
           <p className="flex items-center gap-2">
             <span>{me.data.email}</span>
-            <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs">{me.data.role}</span>
+            <span className="rounded bg-muted px-2 py-0.5 text-xs">{me.data.role}</span>
           </p>
         )}
         {health.data && (
@@ -64,18 +65,18 @@ export function OverviewPage({
         <h2 className="text-lg font-semibold">Activité récente</h2>
         <div className="flex flex-wrap gap-3 text-xs">
           {[...counts.entries()].map(([status, count]) => (
-            <span key={status} className="rounded bg-neutral-100 px-2 py-1">
+            <span key={status} className="rounded bg-muted px-2 py-1">
               {status} : {count}
             </span>
           ))}
         </div>
-        <ul className="flex flex-col divide-y divide-neutral-200 rounded border border-neutral-200">
+        <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
           {runs.data?.slice(0, 5).map((run) => (
             <li key={run.id} className="flex items-center justify-between gap-3 p-3 text-sm">
               <button type="button" onClick={() => onOpenRun(run.id)} className="font-mono text-xs">
                 {run.id}
               </button>
-              <span className="text-xs whitespace-nowrap text-neutral-500">{run.created_at}</span>
+              <span className="text-xs whitespace-nowrap text-muted-foreground">{run.created_at}</span>
               <StatusBadge status={run.status} />
             </li>
           ))}
