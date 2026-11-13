@@ -22,6 +22,7 @@ pub struct Settings {
     pub backoff_unit: Duration,
     pub policy: Policy,
     pub max_concurrent_runs: usize,
+    pub retention_days: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -302,6 +303,7 @@ mod tests {
             backoff_unit: Duration::from_millis(1),
             policy: Policy::parse_allowed("127.0.0.0/8").unwrap(),
             max_concurrent_runs: 1,
+            retention_days: 0,
         };
         Env {
             pool,

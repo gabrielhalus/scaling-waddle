@@ -18,6 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         backoff_unit: Duration::from_secs(1),
         policy: Policy::parse_allowed(&config.allowed_internal_networks)?,
         max_concurrent_runs: config.max_concurrent_runs,
+        retention_days: config.retention_days,
     };
     sw_worker::run(
         pool,

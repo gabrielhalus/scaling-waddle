@@ -9,6 +9,8 @@ use tokio::task::JoinSet;
 
 pub use processor::Settings;
 
+const PURGE_EVERY: Duration = Duration::from_secs(3600);
+
 pub async fn run(
     pool: SqlitePool,
     settings: Settings,
@@ -18,6 +20,7 @@ pub async fn run(
     tokio::pin!(shutdown);
     let capacity = settings.max_concurrent_runs.max(1);
     let mut tasks = JoinSet::new();
+    let mut purge = tokio::time::interval(PURGE_EVERY);
     loop {
         while tasks.len() < capacity {
             let claimed = runs::claim(
@@ -54,6 +57,13 @@ pub async fn run(
                     tracing::error!(%err, "tâche de run interrompue");
                 }
             }
+            _ = purge.tick(), if settings.retention_days > 0 => {
+                match runs::purge_finished(&pool, settings.retention_days).await {
+                    Ok(0) => {}
+                    Ok(purged) => tracing::info!(purged, "runs expirés supprimés"),
+                    Err(err) => tracing::warn!(%err, "purge des runs en échec"),
+                }
+            }
             () = tokio::time::sleep(poll) => {}
         }
     }
@@ -76,6 +86,7 @@ mod tests {
             backoff_unit: Duration::from_millis(1),
             policy: Policy::default(),
             max_concurrent_runs: 1,
+            retention_days: 0,
         }
     }
 
@@ -301,5 +312,72 @@ mod tests {
     #[tokio::test]
     async fn a_capacity_of_one_processes_runs_one_at_a_time() {
         assert_eq!(peak_with_capacity(1).await, 1);
+    }
+
+    #[tokio::test]
+    async fn expired_runs_are_purged_when_retention_is_enabled() {
+        let (pool, _dir) = pool().await;
+        let old = enqueue(&pool, "old").await;
+        sqlx::query(
+            "UPDATE runs SET status = 'succeeded', \
+             finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-40 days') WHERE id = ?",
+        )
+        .bind(&old)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut config = settings();
+        config.retention_days = 30;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(run(
+            pool.clone(),
+            config,
+            Duration::from_millis(10),
+            async {
+                let _ = rx.await;
+            },
+        ));
+        for _ in 0..200 {
+            if runs::get(&pool, &old).await.unwrap().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(runs::get(&pool, &old).await.unwrap().is_none());
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn nothing_is_purged_when_retention_is_disabled() {
+        let (pool, _dir) = pool().await;
+        let old = enqueue(&pool, "old").await;
+        sqlx::query(
+            "UPDATE runs SET status = 'succeeded', \
+             finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-400 days') WHERE id = ?",
+        )
+        .bind(&old)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(run(
+            pool.clone(),
+            settings(),
+            Duration::from_millis(10),
+            async {
+                let _ = rx.await;
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(runs::get(&pool, &old).await.unwrap().is_some());
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

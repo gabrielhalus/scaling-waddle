@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 const DEFAULT_MAX_CONCURRENT_RUNS: usize = 4;
+const DEFAULT_RETENTION_DAYS: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -10,6 +11,7 @@ pub struct Config {
     pub jwt_secret: String,
     pub allowed_internal_networks: String,
     pub max_concurrent_runs: usize,
+    pub retention_days: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +20,8 @@ pub enum ConfigError {
     Bind(String),
     #[error("SW_MAX_CONCURRENT_RUNS doit être un entier entre 1 et 256")]
     MaxConcurrentRuns,
+    #[error("SW_RETENTION_DAYS doit être un entier positif (0 pour tout conserver)")]
+    RetentionDays,
     #[error("SW_JWT_SECRET absent ou de moins de 32 caractères")]
     JwtSecret,
 }
@@ -41,6 +45,13 @@ impl Config {
                 .filter(|n| (1..=256).contains(n))
                 .ok_or(ConfigError::MaxConcurrentRuns)?,
         };
+        let retention_days = match lookup("SW_RETENTION_DAYS") {
+            None => DEFAULT_RETENTION_DAYS,
+            Some(text) => text
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| ConfigError::RetentionDays)?,
+        };
         Ok(Self {
             database_path: lookup("SW_DATABASE_PATH")
                 .map_or_else(|| PathBuf::from("data/scaling-waddle.db"), PathBuf::from),
@@ -48,6 +59,7 @@ impl Config {
             jwt_secret,
             allowed_internal_networks: lookup("SW_ALLOWED_INTERNAL_NETWORKS").unwrap_or_default(),
             max_concurrent_runs,
+            retention_days,
         })
     }
 }
@@ -138,6 +150,26 @@ mod tests {
         for bad in ["0", "257", "x", "-1"] {
             assert!(
                 matches!(with(Some(bad)), Err(ConfigError::MaxConcurrentRuns)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn retention_defaults_to_30_days_and_zero_disables_it() {
+        let with = |value: Option<&'static str>| {
+            Config::from_lookup(move |key| match key {
+                "SW_JWT_SECRET" => Some(SECRET.to_owned()),
+                "SW_RETENTION_DAYS" => value.map(str::to_owned),
+                _ => None,
+            })
+        };
+        assert_eq!(with(None).unwrap().retention_days, 30);
+        assert_eq!(with(Some("0")).unwrap().retention_days, 0);
+        assert_eq!(with(Some("90")).unwrap().retention_days, 90);
+        for bad in ["-1", "x", ""] {
+            assert!(
+                matches!(with(Some(bad)), Err(ConfigError::RetentionDays)),
                 "{bad}"
             );
         }
