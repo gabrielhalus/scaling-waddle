@@ -152,6 +152,25 @@ pub async fn find(
         .await
 }
 
+// Motifs `trigger.config.events` de la version active ; `None` si aucun filtre n'est défini.
+pub async fn accepted_events(
+    pool: &SqlitePool,
+    workflow_id: &str,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    let raw: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT json_extract(v.definition, '$.spec.trigger.config.events') \
+         FROM workflows w JOIN workflow_versions v \
+             ON v.workflow_id = w.id AND v.version = w.active_version \
+         WHERE w.id = ?",
+    )
+    .bind(workflow_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(raw
+        .flatten()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok()))
+}
+
 pub async fn list(pool: &SqlitePool) -> Result<Vec<WorkflowRecord>, sqlx::Error> {
     sqlx::query_as(&format!("{SELECT} ORDER BY w.project, w.name"))
         .fetch_all(pool)
@@ -344,5 +363,40 @@ mod tests {
         assert_eq!(found.id, created.id);
         assert!(find(&pool, "p", "autre").await.unwrap().is_none());
         assert!(find(&pool, "q", "w").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_events_come_from_the_active_version_only() {
+        let (pool, _dir) = pool().await;
+        let with = |events: &str| {
+            Workflow::from_yaml(&format!(
+                "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {{name: w, project: p}}\n\
+                 spec:\n  trigger: {{type: gitlab{events}}}\n  steps:\n    - {{id: a, type: transform, with: {{value: 1}}}}\n"
+            ))
+            .unwrap()
+        };
+        let record = create(
+            &pool,
+            &with(", config: {events: ['gitlab.push', 'gitlab.tag_push']}"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted_events(&pool, &record.id).await.unwrap(), None);
+        activate(&pool, &record.id, 1).await.unwrap();
+        assert_eq!(
+            accepted_events(&pool, &record.id).await.unwrap(),
+            Some(vec!["gitlab.push".to_owned(), "gitlab.tag_push".to_owned()])
+        );
+        add_version(&pool, &record.id, &with("")).await.unwrap();
+        assert_eq!(
+            accepted_events(&pool, &record.id)
+                .await
+                .unwrap()
+                .map(|e| e.len()),
+            Some(2)
+        );
+        activate(&pool, &record.id, 2).await.unwrap();
+        assert_eq!(accepted_events(&pool, &record.id).await.unwrap(), None);
+        assert_eq!(accepted_events(&pool, "inconnu").await.unwrap(), None);
     }
 }
