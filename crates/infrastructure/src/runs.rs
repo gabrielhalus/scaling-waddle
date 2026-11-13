@@ -195,29 +195,51 @@ pub async fn claim(
     .await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parked {
+    Parked,
+    NothingWaiting,
+    LostLease,
+}
+
 pub async fn park(
     pool: &SqlitePool,
     run_id: &str,
     owner: &str,
-    wake_at_ms: i64,
-) -> Result<bool, sqlx::Error> {
+    wake_at_ms: Option<i64>,
+) -> Result<Parked, sqlx::Error> {
     let updated = sqlx::query(
         "UPDATE runs SET status = 'waiting', wake_at = ?3, lease_owner = NULL, lease_expires_at = NULL \
-         WHERE id = ?1 AND lease_owner = ?2 AND status = 'running'",
+         WHERE id = ?1 AND lease_owner = ?2 AND status = 'running' \
+         AND EXISTS (SELECT 1 FROM step_runs WHERE run_id = ?1 AND status = 'waiting')",
     )
     .bind(run_id)
     .bind(owner)
     .bind(wake_at_ms)
     .execute(pool)
     .await?;
-    Ok(updated.rows_affected() == 1)
+    if updated.rows_affected() == 1 {
+        return Ok(Parked::Parked);
+    }
+    let owned: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM runs WHERE id = ? AND lease_owner = ? AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(owner)
+    .fetch_optional(pool)
+    .await?;
+    Ok(if owned.is_some() {
+        Parked::NothingWaiting
+    } else {
+        Parked::LostLease
+    })
 }
 
 pub async fn wait_step(
     pool: &SqlitePool,
     run_id: &str,
     step_id: &str,
-    wake_at_ms: i64,
+    wake_at_ms: Option<i64>,
     output: &Value,
 ) -> Result<(), RunError> {
     let updated = sqlx::query(
@@ -381,6 +403,12 @@ pub async fn request_cancel(pool: &SqlitePool, run_id: &str) -> Result<Cancellat
         .bind(run_id)
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "UPDATE approvals SET status = 'cancelled' WHERE run_id = ? AND status = 'pending'",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         return Ok(Cancellation::Cancelled);
     }
@@ -413,6 +441,12 @@ pub async fn cancel_requested(pool: &SqlitePool, run_id: &str) -> Result<bool, s
 }
 
 pub async fn cancel_pending_steps(pool: &SqlitePool, run_id: &str) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "UPDATE approvals SET status = 'cancelled' WHERE run_id = ? AND status = 'pending'",
+    )
+    .bind(run_id)
+    .execute(pool)
+    .await?;
     Ok(sqlx::query(
         "UPDATE step_runs SET status = 'cancelled', \
          finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
@@ -1024,10 +1058,13 @@ mod tests {
         let (pool, wf, _dir) = setup().await;
         let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
         claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
-        wait_step(&pool, &run, "a", 5000, &json!({ "seconds": 5 }))
+        wait_step(&pool, &run, "a", Some(5000), &json!({ "seconds": 5 }))
             .await
             .unwrap();
-        assert!(park(&pool, &run, "w", 5000).await.unwrap());
+        assert_eq!(
+            park(&pool, &run, "w", Some(5000)).await.unwrap(),
+            Parked::Parked
+        );
         let parked = get(&pool, &run).await.unwrap().unwrap();
         assert_eq!(
             (parked.status.as_str(), parked.lease_owner),
@@ -1045,11 +1082,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn park_refuses_when_no_step_is_waiting_anymore() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        assert_eq!(
+            park(&pool, &run, "w", None).await.unwrap(),
+            Parked::NothingWaiting
+        );
+        assert_eq!(get(&pool, &run).await.unwrap().unwrap().status, "running");
+    }
+
+    #[tokio::test]
     async fn park_requires_the_lease_owner() {
         let (pool, wf, _dir) = setup().await;
         let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
         claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
-        assert!(!park(&pool, &run, "intrus", 10).await.unwrap());
+        assert_eq!(
+            park(&pool, &run, "intrus", Some(10)).await.unwrap(),
+            Parked::LostLease
+        );
         assert_eq!(get(&pool, &run).await.unwrap().unwrap().status, "running");
     }
 
@@ -1058,8 +1110,10 @@ mod tests {
         let (pool, wf, _dir) = setup().await;
         let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
         claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
-        wait_step(&pool, &run, "a", 9000, &json!({})).await.unwrap();
-        park(&pool, &run, "w", 9000).await.unwrap();
+        wait_step(&pool, &run, "a", Some(9000), &json!({}))
+            .await
+            .unwrap();
+        park(&pool, &run, "w", Some(9000)).await.unwrap();
         assert_eq!(
             request_cancel(&pool, &run).await.unwrap(),
             Cancellation::Cancelled
@@ -1081,10 +1135,10 @@ mod tests {
         let first = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
         let second = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
         claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
-        wait_step(&pool, &first, "a", 60_000, &json!({}))
+        wait_step(&pool, &first, "a", Some(60_000), &json!({}))
             .await
             .unwrap();
-        park(&pool, &first, "w", 60_000).await.unwrap();
+        park(&pool, &first, "w", Some(60_000)).await.unwrap();
         assert_eq!(
             claim(&pool, "w", 1, 1000).await.unwrap().unwrap().id,
             second

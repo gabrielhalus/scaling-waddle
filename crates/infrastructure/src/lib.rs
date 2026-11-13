@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod config;
 pub mod cron;
 pub mod db;
