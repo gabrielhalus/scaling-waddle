@@ -4,7 +4,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
-use sw_infrastructure::runs;
+use sw_infrastructure::{cron, runs};
 use tokio::task::JoinSet;
 
 pub use processor::Settings;
@@ -64,7 +64,11 @@ pub async fn run(
                     Err(err) => tracing::warn!(%err, "purge des runs en échec"),
                 }
             }
-            () = tokio::time::sleep(poll) => {}
+            () = tokio::time::sleep(poll) => {
+                if let Err(err) = cron::fire_due(&pool, processor::now_ms() / 1000).await {
+                    tracing::warn!(%err, "ordonnanceur cron en échec");
+                }
+            }
         }
     }
 }
@@ -418,6 +422,59 @@ mod tests {
 
         wait_for_status(&pool, &run_id, "waiting").await;
         wait_for_status(&pool, &run_id, "succeeded").await;
+
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_due_cron_workflow_is_fired_and_processed() {
+        let (pool, _dir) = pool().await;
+        let workflow = Workflow::from_yaml(
+            "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {name: ticker, project: p}\n\
+             spec:\n  trigger: {type: cron, config: {schedule: '* * * * *'}}\n  steps:\n    \
+             - {id: a, type: transform, with: {value: 1}}\n",
+        )
+        .unwrap();
+        let record = workflows::create(&pool, &workflow).await.unwrap();
+        workflows::activate(&pool, &record.id, 1).await.unwrap();
+        let now = processor::now_ms() / 1000;
+        sqlx::query("INSERT INTO schedules (workflow_id, last_fire) VALUES (?, ?)")
+            .bind(&record.id)
+            .bind(now - 180)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(run(
+            pool.clone(),
+            settings(),
+            Duration::from_millis(10),
+            async {
+                let _ = rx.await;
+            },
+        ));
+
+        let mut seen = None;
+        for _ in 0..200 {
+            let listed = runs::list(&pool, Some(&record.id), Some("succeeded"), 10)
+                .await
+                .unwrap();
+            if let Some(first) = listed.first() {
+                seen = Some(first.clone());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let done = seen.expect("aucun run cron terminé");
+        let event = runs::event_of(&pool, &done.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.source, "cron");
 
         tx.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(1), handle)
