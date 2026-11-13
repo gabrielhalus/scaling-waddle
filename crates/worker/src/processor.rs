@@ -8,9 +8,10 @@ use sw_domain::workflow::Step;
 use sw_engine::netguard::Policy;
 use sw_engine::scheduler::{self, Action, Plan, RunOutcome, StepState};
 use sw_engine::steps::{self, Integration, Services, StepOutcome};
+use sw_infrastructure::crypto::Keyring;
 use sw_infrastructure::runs::{self, Parked, Run, RunError};
 use sw_infrastructure::workflows::WorkflowError;
-use sw_infrastructure::{approvals, integrations, workflows};
+use sw_infrastructure::{approvals, integrations, secrets, workflows};
 use tokio::task::{JoinHandle, JoinSet};
 
 const MAX_BACKOFF_SECS: u64 = 3600;
@@ -23,6 +24,7 @@ pub struct Settings {
     pub policy: Policy,
     pub max_concurrent_runs: usize,
     pub retention_days: u32,
+    pub keyring: Keyring,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,22 +92,7 @@ pub async fn process_run(
     let event = runs::event_of(pool, &run.event_id)
         .await?
         .ok_or(ProcessError::Missing("événement"))?;
-    let known = integrations::for_project(pool, &workflow.metadata.project).await?;
-    let services = Arc::new(Services::new(
-        settings.policy.clone(),
-        known
-            .into_iter()
-            .map(|i| {
-                (
-                    i.name,
-                    Integration {
-                        base_url: i.base_url,
-                        headers: i.headers,
-                    },
-                )
-            })
-            .collect(),
-    ));
+    let services = Arc::new(build_services(pool, &workflow.metadata.project, settings).await?);
     let plan = Plan::from_workflow(&workflow);
     let definitions: BTreeMap<String, Step> = workflow
         .spec
@@ -296,6 +283,59 @@ async fn wake_due_steps(pool: &SqlitePool, run_id: &str) -> Result<(), RunError>
     Ok(())
 }
 
+async fn build_services(
+    pool: &SqlitePool,
+    project: &str,
+    settings: &Settings,
+) -> Result<Services, ProcessError> {
+    let known = integrations::for_project(pool, project).await?;
+    let (secret_values, secrets_error) = if settings.keyring.is_enabled() {
+        match secrets::for_project(pool, &settings.keyring, project).await {
+            Ok(values) => (values, None),
+            Err(err) => {
+                tracing::error!(%err, project, "secrets illisibles");
+                (BTreeMap::new(), Some("secrets illisibles".to_owned()))
+            }
+        }
+    } else {
+        (BTreeMap::new(), None)
+    };
+    let mut usable = BTreeMap::new();
+    let mut unavailable = Vec::new();
+    for integration in known {
+        let mut headers = BTreeMap::new();
+        let mut failure = None;
+        for (name, value) in &integration.headers {
+            match steps::resolve_secret_refs(value, &secret_values) {
+                Ok(resolved) => {
+                    headers.insert(name.clone(), resolved);
+                }
+                Err(reason) => {
+                    failure = Some(secrets_error.clone().unwrap_or(reason));
+                    break;
+                }
+            }
+        }
+        match failure {
+            None => {
+                usable.insert(
+                    integration.name,
+                    Integration {
+                        base_url: integration.base_url,
+                        headers,
+                    },
+                );
+            }
+            Some(reason) => unavailable.push((integration.name, reason)),
+        }
+    }
+    let mut services = Services::new(settings.policy.clone(), usable);
+    for (name, reason) in unavailable {
+        services = services.mark_unavailable(name, reason);
+    }
+    Ok(services)
+}
+
 fn summarise(outcome: RunOutcome, rows: &[runs::StepRun]) -> (&'static str, Option<String>) {
     match outcome {
         RunOutcome::Succeeded => ("succeeded", None),
@@ -404,6 +444,7 @@ mod tests {
             policy: Policy::parse_allowed("127.0.0.0/8").unwrap(),
             max_concurrent_runs: 1,
             retention_days: 0,
+            keyring: Keyring::parse(&format!("k1={}", "03".repeat(32)), Some("k1")).unwrap(),
         };
         Env {
             pool,
@@ -977,5 +1018,78 @@ mod tests {
             runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
             "failed"
         );
+    }
+
+    async fn add_secret_integration(env: &Env, server: &MockServer, header: &str) {
+        integrations::create(
+            &env.pool,
+            "p",
+            "hook",
+            &server.uri(),
+            &std::collections::BTreeMap::from([("authorization".to_owned(), header.to_owned())]),
+        )
+        .await
+        .unwrap();
+    }
+
+    const CALL: &str =
+        "    - {id: call, type: http.request, with: {integration: hook, path: /x}}\n";
+
+    #[tokio::test]
+    async fn secret_references_in_integration_headers_are_resolved_for_the_request() {
+        let env = env().await;
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::header("authorization", "Bearer s3cret"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        add_secret_integration(&env, &server, "Bearer ${secret:api_token}").await;
+        secrets::set(&env.pool, &env.settings.keyring, "p", "api_token", "s3cret")
+            .await
+            .unwrap();
+        let run = queued(&env, CALL, json!({})).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        assert_eq!(
+            runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
+            "succeeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_secret_makes_the_integration_unavailable_without_leaking() {
+        let env = env().await;
+        let server = MockServer::start().await;
+        add_secret_integration(&env, &server, "Bearer ${secret:absent}").await;
+        let run = queued(&env, CALL, json!({})).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "failed");
+        assert!(done.error.unwrap().contains("secret inconnu: absent"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn secret_values_never_reach_the_stored_step_output() {
+        let env = env().await;
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        add_secret_integration(&env, &server, "Bearer ${secret:api_token}").await;
+        secrets::set(&env.pool, &env.settings.keyring, "p", "api_token", "s3cret")
+            .await
+            .unwrap();
+        let run = queued(&env, CALL, json!({})).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let stored = runs::steps(&env.pool, &run.id).await.unwrap();
+        assert!(!format!("{stored:?}").contains("s3cret"));
     }
 }

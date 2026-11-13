@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy: Policy::parse_allowed(&config.allowed_internal_networks)?,
         max_concurrent_runs: config.max_concurrent_runs,
         retention_days: config.retention_days,
+        keyring: config.keyring,
     };
     sw_worker::run(
         pool,

@@ -78,6 +78,7 @@ mod tests {
     use serde_json::json;
     use sw_domain::workflow::Workflow;
     use sw_engine::netguard::Policy;
+    use sw_infrastructure::crypto::Keyring;
     use sw_infrastructure::runs::NewEvent;
     use sw_infrastructure::workflows;
 
@@ -91,6 +92,7 @@ mod tests {
             policy: Policy::default(),
             max_concurrent_runs: 1,
             retention_days: 0,
+            keyring: Keyring::empty(),
         }
     }
 
