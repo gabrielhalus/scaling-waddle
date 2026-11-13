@@ -114,6 +114,9 @@ pub async fn process_run(
     let _heartbeat = start_heartbeat(pool.clone(), run.id.clone(), settings);
 
     loop {
+        if runs::cancel_requested(pool, &run.id).await? {
+            runs::cancel_pending_steps(pool, &run.id).await?;
+        }
         let rows = runs::steps(pool, &run.id).await?;
         let mut states = BTreeMap::new();
         let mut step_vars = serde_json::Map::new();
@@ -613,6 +616,40 @@ mod tests {
         assert_eq!(
             runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
             "running"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_request_stops_the_run_after_the_current_step() {
+        let env = env().await;
+        let run = queued(
+            &env,
+            "    - {id: a, type: transform, with: {value: 1}}\n    - {id: b, type: transform, needs: [a], with: {value: 2}}\n",
+            json!({}),
+        )
+        .await;
+        runs::set_step(
+            &env.pool,
+            &run.id,
+            "a",
+            "succeeded",
+            Some(&json!({ "value": 1 })),
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+        runs::request_cancel(&env.pool, &run.id).await.unwrap();
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        assert_eq!(
+            runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(
+            statuses(&env, &run.id).await,
+            pairs(&[("a", "succeeded"), ("b", "cancelled")])
         );
     }
 }
