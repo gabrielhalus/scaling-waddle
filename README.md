@@ -30,6 +30,13 @@ pnpm --filter web lint && pnpm --filter web typecheck && pnpm --filter web test
 | `SW_DATABASE_PATH` | `data/scaling-waddle.db` | Fichier SQLite |
 | `SW_BIND` | `127.0.0.1:8080` | Adresse d'écoute de l'API |
 | `SW_LOG_FORMAT` | texte | `json` pour des logs structurés |
+| `SW_ALLOWED_INTERNAL_NETWORKS` | vide | CIDR internes autorisés pour les appels HTTP (garde SSRF) |
+| `SW_MAX_CONCURRENT_RUNS` | `4` | Runs traités en parallèle par le worker (1 à 256) |
+| `SW_RETENTION_DAYS` | `30` | Durée de conservation des runs terminés, `0` pour tout garder |
+| `SW_SECRET_KEYS` | vide | Clés AES-256 des secrets : `id=hex64,id2=hex64` |
+| `SW_SECRET_ACTIVE_KEY` | vide | Identifiant de la clé qui chiffre les nouveaux secrets |
+
+Pour générer une clé : `openssl rand -hex 32`. Après avoir changé la clé active, `POST /api/v1/secrets/rotate` (admin) rechiffre les secrets existants.
 
 ## Licence
 
