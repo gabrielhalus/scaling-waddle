@@ -162,7 +162,7 @@ impl Workflow {
             errors.push(ValidationError::NoSteps);
         }
         match self.spec.trigger.kind.as_str() {
-            "manual" | "webhook" => {}
+            "manual" | "webhook" | "gitlab" | "uptime-kuma" => {}
             "cron" => {
                 let valid = self
                     .spec
@@ -705,5 +705,14 @@ spec:
         let original = parse_yaml(VALID);
         let text = serde_json::to_string(&original).unwrap();
         assert_eq!(Workflow::from_json(&text).unwrap(), original);
+    }
+
+    #[test]
+    fn connector_triggers_are_accepted() {
+        for kind in ["gitlab", "uptime-kuma"] {
+            let mut workflow = parse_yaml(VALID);
+            workflow.spec.trigger.kind = kind.into();
+            assert!(workflow.validate().is_ok(), "{kind}");
+        }
     }
 }

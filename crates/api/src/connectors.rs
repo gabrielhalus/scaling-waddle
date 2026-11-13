@@ -266,17 +266,14 @@ mod tests {
         let (_, token, _) = token(&h, false).await;
         let (status, _) = call(&h, "gitlab", "swh_inconnu", &[], &json!({})).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = {
-            let (s, _) = send(
-                &h.app,
-                "POST",
-                &format!("/api/v1/triggers/uptime-kuma/{token}"),
-                &[],
-                Some(("application/json", "pas du json".into())),
-            )
-            .await;
-            (s, ())
-        };
+        let (status, _) = send(
+            &h.app,
+            "POST",
+            &format!("/api/v1/triggers/uptime-kuma/{token}"),
+            &[],
+            Some(("application/json", "pas du json".into())),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
