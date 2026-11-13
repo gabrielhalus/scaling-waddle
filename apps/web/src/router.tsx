@@ -74,6 +74,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
       const navigate = useNavigate();
       return (
         <OverviewPage
+          onOpenRun={(runId) => void navigate({ to: '/runs/$runId', params: { runId } })}
           onLogout={() => {
             queryClient.clear();
             void navigate({ to: "/login" });
