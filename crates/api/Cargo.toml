@@ -8,6 +8,7 @@ license.workspace = true
 sw-domain = { path = "../domain" }
 sw-infrastructure = { path = "../infrastructure" }
 axum.workspace = true
+tower-http.workspace = true
 hex.workspace = true
 hmac.workspace = true
 sha2.workspace = true

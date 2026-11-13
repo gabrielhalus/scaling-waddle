@@ -11,11 +11,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::open(&config.database_path).await?;
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, "api démarrée");
-    axum::serve(
-        listener,
-        router(AppState::new(pool, &config.jwt_secret).with_keyring(config.keyring)),
-    )
-    .with_graceful_shutdown(shutdown::signal())
-    .await?;
+    let mut app = router(AppState::new(pool, &config.jwt_secret).with_keyring(config.keyring));
+    if let Some(dir) = &config.web_dir {
+        tracing::info!(dir = %dir.display(), "application web servie");
+        app = sw_api::web::serve(app, dir);
+    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown::signal())
+        .await?;
     Ok(())
 }

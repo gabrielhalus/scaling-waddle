@@ -12,6 +12,7 @@ pub mod state;
 #[cfg(test)]
 mod testing;
 pub mod triggers;
+pub mod web;
 pub mod workflows;
 
 use axum::Router;

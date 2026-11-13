@@ -18,6 +18,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 argon2 = "0.5"

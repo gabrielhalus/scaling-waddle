@@ -15,6 +15,7 @@ pub struct Config {
     pub max_concurrent_runs: usize,
     pub retention_days: u32,
     pub keyring: Keyring,
+    pub web_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +87,9 @@ impl Config {
             max_concurrent_runs,
             retention_days,
             keyring,
+            web_dir: lookup("SW_WEB_DIR")
+                .filter(|dir| !dir.trim().is_empty())
+                .map(PathBuf::from),
         })
     }
 }
@@ -242,5 +246,21 @@ mod tests {
         let config = Config::build(lookup, false).unwrap();
         assert!(config.jwt_secret.is_empty());
         assert_eq!(config.max_concurrent_runs, 4);
+    }
+
+    #[test]
+    fn web_dir_is_optional() {
+        let with = |value: Option<&'static str>| {
+            Config::from_lookup(move |key| match key {
+                "SW_JWT_SECRET" => Some(SECRET.to_owned()),
+                "SW_WEB_DIR" => value.map(str::to_owned),
+                _ => None,
+            })
+            .unwrap()
+            .web_dir
+        };
+        assert_eq!(with(None), None);
+        assert_eq!(with(Some("")), None);
+        assert_eq!(with(Some("/srv/web")), Some(PathBuf::from("/srv/web")));
     }
 }
