@@ -63,6 +63,26 @@ pub async fn execute(kind: &str, with: &Value, vars: &Value, services: &Services
     }
 }
 
+pub const MAX_DELAY_SECS: u64 = 30 * 24 * 60 * 60;
+
+pub fn delay_seconds(with: &Value, vars: &Value) -> Result<u64, String> {
+    let raw = with.get("seconds").ok_or("`with.seconds` est requis")?;
+    let rendered = expr::render(raw, vars).map_err(|err| err.to_string())?;
+    let seconds = match &rendered {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+    .ok_or("`with.seconds` doit être un entier positif")?;
+    if (1..=MAX_DELAY_SECS).contains(&seconds) {
+        Ok(seconds)
+    } else {
+        Err(format!(
+            "`with.seconds` doit être compris entre 1 et {MAX_DELAY_SECS}"
+        ))
+    }
+}
+
 fn condition(with: &Value, vars: &Value) -> StepOutcome {
     let Some(expression) = with.get("expression").and_then(Value::as_str) else {
         return StepOutcome::fatal("`with.expression` est requis et doit être une chaîne");
@@ -171,5 +191,36 @@ mod tests {
             assert!(error.contains(kind));
             assert!(!retryable);
         }
+    }
+
+    #[test]
+    fn delay_seconds_reads_integers_and_templates() {
+        let vars = json!({ "event": { "payload": { "n": 90 } } });
+        assert_eq!(delay_seconds(&json!({ "seconds": 5 }), &vars), Ok(5));
+        assert_eq!(delay_seconds(&json!({ "seconds": "7" }), &vars), Ok(7));
+        assert_eq!(
+            delay_seconds(&json!({ "seconds": "${{ event.payload.n }}" }), &vars),
+            Ok(90)
+        );
+    }
+
+    #[test]
+    fn delay_seconds_rejects_missing_invalid_and_out_of_range_values() {
+        let vars = json!({});
+        for with in [
+            json!({}),
+            json!({ "seconds": 0 }),
+            json!({ "seconds": -3 }),
+            json!({ "seconds": 1.5 }),
+            json!({ "seconds": "abc" }),
+            json!({ "seconds": true }),
+            json!({ "seconds": MAX_DELAY_SECS + 1 }),
+        ] {
+            assert!(delay_seconds(&with, &vars).is_err(), "{with}");
+        }
+        assert_eq!(
+            delay_seconds(&json!({ "seconds": MAX_DELAY_SECS }), &vars),
+            Ok(MAX_DELAY_SECS)
+        );
     }
 }
