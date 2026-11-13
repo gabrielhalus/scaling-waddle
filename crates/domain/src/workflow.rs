@@ -35,10 +35,14 @@ pub struct Metadata {
     pub project: String,
 }
 
+const MAX_CONCURRENCY: u32 = 100;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
     pub trigger: Trigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<u32>,
     pub steps: Vec<Step>,
 }
 
@@ -101,6 +105,8 @@ pub enum ValidationError {
     DuplicateStepId(String),
     #[error("politique de retry invalide pour {0} (1 à 10 tentatives, délai de 1 à 3600 s)")]
     InvalidRetry(String),
+    #[error("concurrence invalide (1 à 100 runs simultanés)")]
+    InvalidConcurrency,
     #[error("type d'étape inconnu pour {step}: {step_type}")]
     UnknownStepType { step: String, step_type: String },
     #[error("l'étape {step} dépend d'une étape inconnue: {needs}")]
@@ -142,6 +148,13 @@ impl Workflow {
         }
         if self.spec.steps.is_empty() {
             errors.push(ValidationError::NoSteps);
+        }
+        if self
+            .spec
+            .concurrency
+            .is_some_and(|limit| !(1..=MAX_CONCURRENCY).contains(&limit))
+        {
+            errors.push(ValidationError::InvalidConcurrency);
         }
 
         let ids = self.check_steps(&mut errors);
@@ -591,5 +604,29 @@ spec:
         c.metadata.name = "other".into();
         assert_ne!(a.hash(), c.hash());
         assert_eq!(a.hash().len(), 64);
+    }
+
+    #[test]
+    fn concurrency_must_be_between_1_and_100() {
+        for (limit, ok) in [(1, true), (100, true), (0, false), (101, false)] {
+            let mut workflow = parse_yaml(VALID);
+            workflow.spec.concurrency = Some(limit);
+            assert_eq!(workflow.validate().is_ok(), ok, "{limit}");
+        }
+    }
+
+    #[test]
+    fn concurrency_is_parsed_and_omitted_from_the_hash_when_absent() {
+        let plain = parse_yaml(VALID);
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("concurrency")
+        );
+        let mut limited = parse_yaml(VALID);
+        limited.spec.concurrency = Some(2);
+        assert_ne!(plain.hash(), limited.hash());
+        let yaml = VALID.replace("  trigger:", "  concurrency: 2\n  trigger:");
+        assert_eq!(parse_yaml(&yaml).spec.concurrency, Some(2));
     }
 }
