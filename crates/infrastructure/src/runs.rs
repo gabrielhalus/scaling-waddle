@@ -226,6 +226,24 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Run>, sqlx::Error
         .await
 }
 
+pub async fn list(
+    pool: &SqlitePool,
+    workflow_id: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Run>, sqlx::Error> {
+    sqlx::query_as(&format!(
+        "SELECT {RUN_COLUMNS} FROM runs \
+         WHERE (?1 IS NULL OR workflow_id = ?1) AND (?2 IS NULL OR status = ?2) \
+         ORDER BY created_at DESC, rowid DESC LIMIT ?3"
+    ))
+    .bind(workflow_id)
+    .bind(status)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn event_of(pool: &SqlitePool, event_id: &str) -> Result<Option<EventRecord>, RunError> {
     let row: Option<(String, String, String, String)> =
         sqlx::query_as("SELECT source, type, payload, correlation_id FROM events WHERE id = ?")
@@ -549,6 +567,41 @@ mod tests {
             .map(|s| s.status)
             .collect();
         assert_eq!(statuses, ["succeeded", "pending"]);
+    }
+
+    #[tokio::test]
+    async fn list_is_newest_first_and_filterable() {
+        let (pool, wf, _dir) = setup().await;
+        let first = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        let second = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        let third = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w1", 1_000, 30_000).await.unwrap().unwrap();
+        finish(&pool, &first, "w1", "failed", Some("boom"))
+            .await
+            .unwrap();
+
+        let all = list(&pool, None, None, 10).await.unwrap();
+        assert_eq!(
+            all.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            [&third, &second, &first]
+        );
+        let failed = list(&pool, None, Some("failed"), 10).await.unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].id, first);
+        assert_eq!(
+            list(&pool, Some(&wf), Some("queued"), 10)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            list(&pool, Some("autre"), None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(list(&pool, None, None, 2).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
