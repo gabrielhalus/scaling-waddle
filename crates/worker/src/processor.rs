@@ -1120,18 +1120,19 @@ mod tests {
         );
         assert!(events[0].details.contains("succeeded"));
 
+        let other = env().await;
         let parked = queued(
-            &env,
+            &other,
             "    - {id: p, type: delay, with: {seconds: 60}}\n",
             json!({}),
         )
         .await;
-        process_run(&env.pool, &parked, &env.settings)
+        process_run(&other.pool, &parked, &other.settings)
             .await
             .unwrap();
-        let events = audit::list(&env.pool, Some("run.finished"), None, 10)
+        let events = audit::list(&other.pool, Some("run.finished"), None, 10)
             .await
             .unwrap();
-        assert_eq!(events.len(), 1);
+        assert!(events.is_empty());
     }
 }
