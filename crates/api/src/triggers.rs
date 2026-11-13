@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -136,6 +136,14 @@ async fn webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let key = webhook_tokens::hash(&token);
+    let now = Instant::now();
+    if let Some(wait) = state.webhook_limiter.retry_after(&key, now) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: wait.as_secs().max(1),
+        });
+    }
+    state.webhook_limiter.record_failure(&key, now);
     let resolved = webhook_tokens::resolve(&state.db, &state.keyring, &token)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -641,5 +649,23 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_token_is_rate_limited_per_minute() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        let token = webhook_token(&h, &wf).await;
+        let mut last = StatusCode::ACCEPTED;
+        for sent in 1..=121 {
+            let (status, _) = hook(&h, &token, &[], "{}").await;
+            if sent <= 120 {
+                assert_eq!(status, StatusCode::ACCEPTED, "requête {sent}");
+            }
+            last = status;
+        }
+        assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+        let (other_status, _) = hook(&h, "swh_inconnu", &[], "{}").await;
+        assert_eq!(other_status, StatusCode::NOT_FOUND);
     }
 }
