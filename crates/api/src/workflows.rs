@@ -1,6 +1,7 @@
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -16,7 +17,9 @@ use crate::error::ApiError;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/workflows", get(list).post(create))
+        .route("/api/v1/workflows/import", post(import))
         .route("/api/v1/workflows/{id}", get(detail))
+        .route("/api/v1/workflows/{id}/export", get(export))
         .route("/api/v1/workflows/{id}/versions", post(add_version))
         .route("/api/v1/workflows/{id}/activate", post(activate))
         .route("/api/v1/workflows/{id}/deactivate", post(deactivate))
@@ -142,6 +145,84 @@ async fn add_version(
     )
     .await;
     Ok(Json(json!({ "version": version })))
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    version: Option<i64>,
+    format: Option<String>,
+}
+
+async fn export(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(id): Path<String>,
+    Query(query): Query<ExportQuery>,
+) -> Result<Response, ApiError> {
+    let record = workflows::get(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let version = query
+        .version
+        .or(record.active_version)
+        .unwrap_or(record.latest_version);
+    let workflow = workflows::get_version(&state.db, &id, version)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    match query.format.as_deref().unwrap_or("yaml") {
+        "yaml" => {
+            let text = workflow.to_yaml().map_err(|err| {
+                tracing::error!(%err, "export YAML en échec");
+                ApiError::Internal
+            })?;
+            Ok(([(header::CONTENT_TYPE, "application/yaml")], text).into_response())
+        }
+        "json" => Ok(Json(workflow).into_response()),
+        _ => Err(ApiError::BadRequest(
+            "format doit valoir yaml ou json".into(),
+        )),
+    }
+}
+
+async fn import(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    auth.require_writer()?;
+    let workflow = parse_definition(&headers, &body)?;
+    let (record, version, created) = match workflows::find(
+        &state.db,
+        &workflow.metadata.project,
+        &workflow.metadata.name,
+    )
+    .await?
+    {
+        Some(existing) => {
+            let version = workflows::add_version(&state.db, &existing.id, &workflow).await?;
+            (existing, version, false)
+        }
+        None => (workflows::create(&state.db, &workflow).await?, 1, true),
+    };
+    audit::record(
+        &state,
+        &auth.id,
+        "workflow.import",
+        "workflow",
+        &record.id,
+        json!({ "version": version, "created": created }),
+    )
+    .await;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(json!({ "id": record.id, "version": version, "created": created })),
+    ))
 }
 
 async fn activate(
@@ -469,5 +550,180 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    mod portability {
+        use axum::http::StatusCode;
+        use serde_json::json;
+
+        use crate::testing::{bearer, harness, send, send_raw, workflow};
+
+        const YAML: &str = "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {name: imported, project: p}\n\
+                            spec:\n  trigger: {type: manual}\n  steps:\n    - {id: a, type: transform, with: {value: 1}}\n";
+
+        #[tokio::test]
+        async fn export_defaults_to_yaml_of_the_active_version() {
+            let h = harness().await;
+            let id = h.active_workflow("a").await;
+            let (status, content_type, body) = send_raw(
+                &h.app,
+                "GET",
+                &format!("/api/v1/workflows/{id}/export"),
+                &bearer(&h.admin),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(content_type.contains("yaml"), "{content_type}");
+            let parsed = sw_domain::workflow::Workflow::from_yaml(&body).unwrap();
+            assert_eq!(parsed.metadata.name, "a");
+            assert!(parsed.validate().is_ok());
+        }
+
+        #[tokio::test]
+        async fn export_in_json_and_by_version() {
+            let h = harness().await;
+            let id = h.active_workflow("a").await;
+            let mut second = workflow("a");
+            second["spec"]["steps"][0]["with"] = json!({ "for": "2s" });
+            h.post(&format!("/api/v1/workflows/{id}/versions"), second)
+                .await;
+            let (status, v1) = h
+                .get(&format!(
+                    "/api/v1/workflows/{id}/export?format=json&version=1"
+                ))
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                v1["spec"]["steps"][0].get("with").is_none()
+                    || v1["spec"]["steps"][0]["with"].is_null()
+                    || v1["spec"]["steps"][0]["with"] != json!({ "for": "2s" })
+            );
+            let (_, v2) = h
+                .get(&format!(
+                    "/api/v1/workflows/{id}/export?format=json&version=2"
+                ))
+                .await;
+            assert_eq!(v2["spec"]["steps"][0]["with"], json!({ "for": "2s" }));
+            let (_, active) = h
+                .get(&format!("/api/v1/workflows/{id}/export?format=json"))
+                .await;
+            assert_eq!(active, v1);
+        }
+
+        #[tokio::test]
+        async fn export_rejects_unknown_formats_versions_and_workflows() {
+            let h = harness().await;
+            let id = h.active_workflow("a").await;
+            let (status, _) = h
+                .get(&format!("/api/v1/workflows/{id}/export?format=toml"))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, _) = h
+                .get(&format!("/api/v1/workflows/{id}/export?version=9"))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, _) = h.get("/api/v1/workflows/nope/export").await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn import_creates_then_versions_then_is_idempotent() {
+            let h = harness().await;
+            let call = |body: String| {
+                let app = h.app.clone();
+                let token = h.admin.clone();
+                async move {
+                    send(
+                        &app,
+                        "POST",
+                        "/api/v1/workflows/import",
+                        &bearer(&token),
+                        Some(("application/yaml", body)),
+                    )
+                    .await
+                }
+            };
+            let (status, first) = call(YAML.to_owned()).await;
+            assert_eq!(
+                (status, &first["created"], &first["version"]),
+                (StatusCode::CREATED, &json!(true), &json!(1))
+            );
+            let (status, same) = call(YAML.to_owned()).await;
+            assert_eq!(
+                (status, &same["created"], &same["version"]),
+                (StatusCode::OK, &json!(false), &json!(1))
+            );
+            assert_eq!(same["id"], first["id"]);
+            let (_, changed) = call(YAML.replace("value: 1", "value: 2")).await;
+            assert_eq!(changed["version"], 2);
+            let (_, listed) = h.get("/api/v1/workflows").await;
+            assert_eq!(listed.as_array().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn an_exported_workflow_can_be_imported_elsewhere() {
+            let source = harness().await;
+            let id = source.active_workflow("portable").await;
+            let (_, _, yaml) = send_raw(
+                &source.app,
+                "GET",
+                &format!("/api/v1/workflows/{id}/export"),
+                &bearer(&source.admin),
+                None,
+            )
+            .await;
+            let target = harness().await;
+            let (status, body) = send(
+                &target.app,
+                "POST",
+                "/api/v1/workflows/import",
+                &bearer(&target.admin),
+                Some(("application/yaml", yaml)),
+            )
+            .await;
+            assert_eq!(
+                (status, &body["created"]),
+                (StatusCode::CREATED, &json!(true))
+            );
+        }
+
+        #[tokio::test]
+        async fn import_validates_authorizes_and_traces() {
+            let h = harness().await;
+            let (status, _) = send(
+                &h.app,
+                "POST",
+                "/api/v1/workflows/import",
+                &bearer(&h.admin),
+                Some((
+                    "application/yaml",
+                    YAML.replace("needs", "x")
+                        .replace("steps:", "steps: []\n  old:"),
+                )),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let viewer = h.viewer_token().await;
+            let (status, _) = send(
+                &h.app,
+                "POST",
+                "/api/v1/workflows/import",
+                &bearer(&viewer),
+                Some(("application/yaml", YAML.to_owned())),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            send(
+                &h.app,
+                "POST",
+                "/api/v1/workflows/import",
+                &bearer(&h.admin),
+                Some(("application/yaml", YAML.to_owned())),
+            )
+            .await;
+            let (_, events) = h.get("/api/v1/audit?action=workflow.import").await;
+            assert_eq!(events.as_array().unwrap().len(), 1);
+        }
     }
 }

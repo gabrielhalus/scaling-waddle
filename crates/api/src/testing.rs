@@ -77,6 +77,40 @@ pub async fn send(
     )
 }
 
+pub async fn send_raw(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, String)],
+    body: Option<(&str, String)>,
+) -> (StatusCode, String, String) {
+    let mut req = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, value);
+    }
+    let req = match body {
+        Some((content_type, text)) => req
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(text)),
+        None => req.body(Body::empty()),
+    }
+    .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let content_type = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        content_type,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
 pub fn bearer(token: &str) -> Vec<(&'static str, String)> {
     vec![("authorization", format!("Bearer {token}"))]
 }
