@@ -14,6 +14,9 @@ function fakeClient(authenticated: boolean) {
     workflows: vi.fn().mockResolvedValue([]),
     runs: vi.fn().mockResolvedValue([]),
     approvals: vi.fn().mockResolvedValue([]),
+    integrations: vi.fn().mockResolvedValue([]),
+    secrets: vi.fn().mockResolvedValue([]),
+    audit: vi.fn().mockResolvedValue([]),
   } as unknown as ApiClient
 }
 
@@ -56,5 +59,13 @@ describe('App routing', () => {
     render(<App client={fakeClient(true)} />)
     await userEvent.click(await screen.findByRole('link', { name: 'Approbations' }))
     expect(await screen.findByText('Aucune demande.')).toBeInTheDocument()
+  })
+
+  it('opens the integrations and audit pages from the navigation', async () => {
+    render(<App client={fakeClient(true)} />)
+    await userEvent.click(await screen.findByRole('link', { name: 'Intégrations' }))
+    expect(await screen.findByText('Aucune intégration.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('link', { name: 'Audit' }))
+    expect(await screen.findByText('Aucun événement.')).toBeInTheDocument()
   })
 })
