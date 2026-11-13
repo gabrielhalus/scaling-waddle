@@ -4,6 +4,7 @@ pub mod health;
 pub mod integrations;
 pub mod ratelimit;
 pub mod runs;
+pub mod signature;
 pub mod state;
 #[cfg(test)]
 mod testing;

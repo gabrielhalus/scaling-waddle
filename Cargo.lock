@@ -2097,9 +2097,12 @@ name = "sw-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hex",
+ "hmac",
  "http-body-util",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "sw-domain",
  "sw-infrastructure",
