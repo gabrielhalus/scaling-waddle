@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -14,6 +14,9 @@ pub enum ApiError {
     Forbidden,
     NotFound,
     Conflict(&'static str),
+    TooManyRequests {
+        retry_after_secs: u64,
+    },
     Internal,
 }
 
@@ -35,6 +38,14 @@ impl IntoResponse for ApiError {
             ),
             Self::NotFound => (StatusCode::NOT_FOUND, json!({ "error": "introuvable" })),
             Self::Conflict(message) => (StatusCode::CONFLICT, json!({ "error": message })),
+            Self::TooManyRequests { retry_after_secs } => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(header::RETRY_AFTER, retry_after_secs.to_string())],
+                    Json(json!({ "error": "trop de tentatives, réessayez plus tard" })),
+                )
+                    .into_response();
+            }
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": "erreur interne" }),

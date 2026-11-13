@@ -1,5 +1,5 @@
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
@@ -158,6 +158,11 @@ async fn login(
     Json(credentials): Json<Credentials>,
 ) -> Result<Json<Tokens>, ApiError> {
     let email = credentials.email.trim().to_lowercase();
+    if let Some(wait) = state.login_limiter.retry_after(&email, Instant::now()) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: wait.as_secs().max(1),
+        });
+    }
     let user = users::find_by_email(&state.db, &email).await?;
     let stored = match &user {
         Some(user) => user.password_hash.clone(),
@@ -165,8 +170,14 @@ async fn login(
     };
     let ok = verify_blocking(credentials.password, stored).await?;
     match user {
-        Some(user) if ok => Ok(Json(issue(&state, &user).await?)),
-        _ => Err(ApiError::Unauthorized),
+        Some(user) if ok => {
+            state.login_limiter.clear(&email);
+            Ok(Json(issue(&state, &user).await?))
+        }
+        _ => {
+            state.login_limiter.record_failure(&email, Instant::now());
+            Err(ApiError::Unauthorized)
+        }
     }
 }
 
@@ -434,5 +445,52 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn login_locks_out_after_repeated_failures() {
+        let (app, _dir) = app().await;
+        setup(&app).await;
+        let attempt = |password: &'static str| {
+            call(
+                &app,
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Some(json!({ "email": "ada@example.com", "password": password })),
+            )
+        };
+        for _ in 0..5 {
+            assert_eq!(attempt("mauvais").await.0, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(attempt("mauvais").await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(attempt(PASSWORD).await.0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn lockout_is_per_email_and_a_success_resets_the_count() {
+        let (app, _dir) = app().await;
+        setup(&app).await;
+        let attempt = |email: &'static str, password: &'static str| {
+            call(
+                &app,
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Some(json!({ "email": email, "password": password })),
+            )
+        };
+        for _ in 0..4 {
+            attempt("ada@example.com", "mauvais").await;
+        }
+        assert_eq!(attempt("ada@example.com", PASSWORD).await.0, StatusCode::OK);
+        for _ in 0..4 {
+            attempt("ada@example.com", "mauvais").await;
+        }
+        assert_eq!(attempt("ada@example.com", PASSWORD).await.0, StatusCode::OK);
+        for _ in 0..6 {
+            attempt("inconnu@example.com", "x").await;
+        }
+        assert_eq!(attempt("ada@example.com", PASSWORD).await.0, StatusCode::OK);
     }
 }

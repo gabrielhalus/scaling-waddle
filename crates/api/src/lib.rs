@@ -2,6 +2,7 @@ pub mod auth;
 pub mod error;
 pub mod health;
 pub mod integrations;
+pub mod ratelimit;
 pub mod runs;
 pub mod state;
 #[cfg(test)]
