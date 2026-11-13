@@ -8,6 +8,7 @@ pub mod jwt;
 pub mod password;
 pub mod refresh_tokens;
 pub mod runs;
+pub mod secrets;
 pub mod shutdown;
 pub mod telemetry;
 pub mod users;
