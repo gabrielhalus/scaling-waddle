@@ -62,3 +62,13 @@ La sortie est `{result, cost_usd, turns}`. L'agent s'appelle par `claude -p`, **
 Authentification : lancez `claude setup-token` avec votre abonnement et placez le jeton dans `SW_AGENT_OAUTH_TOKEN`. L'usage doit rester celui d'une personne dans les quotas de son abonnement ; vérifiez les conditions d'utilisation en vigueur avant tout autre déploiement.
 
 Attention : un prompt construit depuis un payload externe (webhook, GitLab, Uptime Kuma) peut contenir des instructions hostiles. Sans outil, l'agent ne peut rien exécuter, mais sa réponse reste une donnée non fiable : ne la transmettez pas telle quelle à une action sensible sans approbation.
+
+## Déploiement avec Docker Compose
+
+`compose.yaml` n'expose que `8080` en interne (`expose`), sans publier de port sur l'hôte : le routage est confié à un reverse proxy (Traefik sur Dokploy). Dans Dokploy, ajoutez un domaine pointant sur le service `api`, port `8080`.
+
+Pour un essai local avec le port publié :
+
+```
+docker compose -f compose.yaml -f compose.local.yaml up --build
+```
