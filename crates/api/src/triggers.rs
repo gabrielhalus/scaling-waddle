@@ -36,6 +36,10 @@ impl From<RunError> for ApiError {
         match err {
             RunError::NotFound => Self::NotFound,
             RunError::NotActive => Self::Conflict("le workflow n'est pas actif"),
+            RunError::AlreadyFinished => Self::Conflict("le run est déjà terminé"),
+            RunError::NotRetryable => {
+                Self::Conflict("seul un run échoué ou annulé peut être relancé")
+            }
             RunError::InvalidStatus(_) | RunError::Definition(_) | RunError::Db(_) => {
                 tracing::error!(%err, "erreur runs");
                 Self::Internal

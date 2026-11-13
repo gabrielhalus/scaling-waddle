@@ -1,10 +1,11 @@
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sw_infrastructure::runs::{self, Run, StepRun};
+use sw_infrastructure::runs::{self, Cancellation, Run, StepRun};
 
 use crate::AppState;
 use crate::auth::AuthUser;
@@ -25,6 +26,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/runs", get(list))
         .route("/api/v1/runs/{id}", get(detail))
+        .route("/api/v1/runs/{id}/cancel", post(cancel))
+        .route("/api/v1/runs/{id}/retry", post(retry))
 }
 
 #[derive(Deserialize)]
@@ -115,6 +118,29 @@ async fn detail(
         },
         "steps": steps.iter().map(step_json).collect::<Vec<_>>(),
     })))
+}
+
+async fn cancel(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    auth.require_writer()?;
+    let status = match runs::request_cancel(&state.db, &id).await? {
+        Cancellation::Cancelled => "cancelled",
+        Cancellation::Requested => "cancelling",
+    };
+    Ok(Json(json!({ "run_id": id, "status": status })))
+}
+
+async fn retry(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    auth.require_writer()?;
+    let run_id = runs::retry(&state.db, &id).await?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run_id }))))
 }
 
 #[cfg(test)]
@@ -231,5 +257,81 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn cancel_ends_a_queued_run_and_refuses_it_twice() {
+        let h = harness().await;
+        let (_, run_id) = triggered(&h, "a").await;
+        let uri = format!("/api/v1/runs/{run_id}/cancel");
+        let (status, body) = h.post(&uri, json!({})).await;
+        assert_eq!(
+            (status, &body["status"]),
+            (StatusCode::OK, &json!("cancelled"))
+        );
+        let (_, detail) = h.get(&format!("/api/v1/runs/{run_id}")).await;
+        assert_eq!(detail["run"]["status"], "cancelled");
+        assert_eq!(detail["steps"][0]["status"], "cancelled");
+        let (status, _) = h.post(&uri, json!({})).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn cancel_of_a_running_run_is_only_requested() {
+        let h = harness().await;
+        let (_, run_id) = triggered(&h, "a").await;
+        sw_infrastructure::runs::claim(&h.state.db, "w", 0, 1000)
+            .await
+            .unwrap();
+        let (status, body) = h
+            .post(&format!("/api/v1/runs/{run_id}/cancel"), json!({}))
+            .await;
+        assert_eq!(
+            (status, &body["status"]),
+            (StatusCode::OK, &json!("cancelling"))
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_queues_a_new_run_from_a_cancelled_one() {
+        let h = harness().await;
+        let (_, run_id) = triggered(&h, "a").await;
+        let (status, _) = h
+            .post(&format!("/api/v1/runs/{run_id}/retry"), json!({}))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        h.post(&format!("/api/v1/runs/{run_id}/cancel"), json!({}))
+            .await;
+        let (status, body) = h
+            .post(&format!("/api/v1/runs/{run_id}/retry"), json!({}))
+            .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let new_id = body["run_id"].as_str().unwrap();
+        assert_ne!(new_id, run_id);
+        let (_, detail) = h.get(&format!("/api/v1/runs/{new_id}")).await;
+        assert_eq!(detail["run"]["status"], "queued");
+        assert_eq!(detail["event"]["payload"], json!({ "n": 1 }));
+    }
+
+    #[tokio::test]
+    async fn cancel_and_retry_need_a_writer_and_a_known_run() {
+        let h = harness().await;
+        let (_, run_id) = triggered(&h, "a").await;
+        let viewer = h.viewer_token().await;
+        for action in ["cancel", "retry"] {
+            let (status, _) = send(
+                &h.app,
+                "POST",
+                &format!("/api/v1/runs/{run_id}/{action}"),
+                &bearer(&viewer),
+                Some(("application/json", "{}".into())),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            let (status, _) = h
+                .post(&format!("/api/v1/runs/nope/{action}"), json!({}))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
     }
 }
