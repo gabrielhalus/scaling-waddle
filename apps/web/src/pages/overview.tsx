@@ -11,7 +11,7 @@ export function OverviewPage({ onLogout }: { onLogout: () => void }) {
   const databaseUp = health.data?.database === 'ok'
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 p-6">
+    <div className="flex flex-col gap-8">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Overview</h1>
         <button
@@ -35,6 +35,6 @@ export function OverviewPage({ onLogout }: { onLogout: () => void }) {
           </p>
         )}
       </section>
-    </main>
+    </div>
   )
 }
