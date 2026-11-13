@@ -408,6 +408,28 @@ pub async fn retry(pool: &SqlitePool, run_id: &str) -> Result<String, RunError> 
     Ok(new_id)
 }
 
+pub async fn purge_finished(pool: &SqlitePool, older_than_days: u32) -> Result<u64, sqlx::Error> {
+    let age = format!("-{older_than_days} days");
+    let mut tx = pool.begin().await?;
+    let runs = sqlx::query(
+        "DELETE FROM runs WHERE status IN ('succeeded', 'failed', 'cancelled') \
+         AND finished_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
+    )
+    .bind(&age)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "DELETE FROM events WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) \
+         AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.event_id = events.id)",
+    )
+    .bind(&age)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(runs)
+}
+
 pub async fn steps(pool: &SqlitePool, run_id: &str) -> Result<Vec<StepRun>, sqlx::Error> {
     sqlx::query_as(
         "SELECT step_id, status, attempts, output, error, started_at, finished_at FROM step_runs \
@@ -880,5 +902,75 @@ mod tests {
         assert!(claim(&pool, "w", 0, 1000).await.unwrap().is_some());
         assert!(claim(&pool, "w", 1, 1000).await.unwrap().is_some());
         assert!(claim(&pool, "w", 2, 1000).await.unwrap().is_none());
+    }
+
+    async fn aged_run(pool: &sqlx::SqlitePool, wf: &str, status: &str, days: i64) -> String {
+        let run = ingest(pool, &event(wf, None)).await.unwrap();
+        let stamp = format!("strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{days} days')");
+        sqlx::query(&format!(
+            "UPDATE runs SET status = ?, finished_at = {stamp} WHERE id = ?"
+        ))
+        .bind(status)
+        .bind(&run.run_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!(
+            "UPDATE events SET created_at = {stamp} WHERE id = ?"
+        ))
+        .bind(&run.event_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        run.run_id
+    }
+
+    #[tokio::test]
+    async fn purge_removes_old_finished_runs_with_their_steps_and_events() {
+        let (pool, wf, _dir) = setup().await;
+        let old = aged_run(&pool, &wf, "succeeded", 40).await;
+        let recent = aged_run(&pool, &wf, "failed", 5).await;
+        assert_eq!(purge_finished(&pool, 30).await.unwrap(), 1);
+        assert!(get(&pool, &old).await.unwrap().is_none());
+        assert!(steps(&pool, &old).await.unwrap().is_empty());
+        assert!(get(&pool, &recent).await.unwrap().is_some());
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_never_touches_unfinished_runs() {
+        let (pool, wf, _dir) = setup().await;
+        let queued = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        sqlx::query("UPDATE runs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+            .bind(&queued)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let running = aged_run(&pool, &wf, "running", 90).await;
+        assert_eq!(purge_finished(&pool, 30).await.unwrap(), 0);
+        assert!(get(&pool, &queued).await.unwrap().is_some());
+        assert!(get(&pool, &running).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn purge_keeps_events_still_referenced_by_a_run() {
+        let (pool, wf, _dir) = setup().await;
+        let old = aged_run(&pool, &wf, "failed", 40).await;
+        let retried = retry(&pool, &old).await.unwrap();
+        purge_finished(&pool, 30).await.unwrap();
+        assert!(get(&pool, &retried).await.unwrap().is_some());
+        assert!(
+            event_of(
+                &pool,
+                &get(&pool, &retried).await.unwrap().unwrap().event_id
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
     }
 }
