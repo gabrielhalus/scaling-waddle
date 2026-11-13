@@ -20,6 +20,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_concurrent_runs: config.max_concurrent_runs,
         retention_days: config.retention_days,
         keyring: config.keyring,
+        agent: config.agent.map(|agent| {
+            std::sync::Arc::new(sw_engine::steps::agent::ClaudeCli::new(
+                agent.command,
+                agent.oauth_token,
+            ))
+        }),
     };
     sw_worker::run(
         pool,

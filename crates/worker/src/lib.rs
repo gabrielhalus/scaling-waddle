@@ -93,6 +93,7 @@ mod tests {
             max_concurrent_runs: 1,
             retention_days: 0,
             keyring: Keyring::empty(),
+            agent: None,
         }
     }
 

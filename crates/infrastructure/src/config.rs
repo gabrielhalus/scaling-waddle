@@ -16,6 +16,22 @@ pub struct Config {
     pub retention_days: u32,
     pub keyring: Keyring,
     pub web_dir: Option<PathBuf>,
+    pub agent: Option<AgentConfig>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct AgentConfig {
+    pub command: String,
+    pub oauth_token: Option<String>,
+}
+
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("command", &self.command)
+            .field("oauth_token", &self.oauth_token.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +103,13 @@ impl Config {
             max_concurrent_runs,
             retention_days,
             keyring,
+            agent: lookup("SW_AGENT_COMMAND")
+                .filter(|command| !command.trim().is_empty())
+                .map(|command| AgentConfig {
+                    command,
+                    oauth_token: lookup("SW_AGENT_OAUTH_TOKEN")
+                        .filter(|token| !token.trim().is_empty()),
+                }),
             web_dir: lookup("SW_WEB_DIR")
                 .filter(|dir| !dir.trim().is_empty())
                 .map(PathBuf::from),
@@ -262,5 +285,29 @@ mod tests {
         assert_eq!(with(None), None);
         assert_eq!(with(Some("")), None);
         assert_eq!(with(Some("/srv/web")), Some(PathBuf::from("/srv/web")));
+    }
+
+    #[test]
+    fn the_agent_is_opt_in_and_its_token_never_prints() {
+        let with = |command: Option<&'static str>, token: Option<&'static str>| {
+            Config::from_lookup(move |key| match key {
+                "SW_JWT_SECRET" => Some(SECRET.to_owned()),
+                "SW_AGENT_COMMAND" => command.map(str::to_owned),
+                "SW_AGENT_OAUTH_TOKEN" => token.map(str::to_owned),
+                _ => None,
+            })
+            .unwrap()
+        };
+        assert_eq!(with(None, Some("tok")).agent, None);
+        assert_eq!(with(Some(" "), None).agent, None);
+        let config = with(Some("/usr/bin/claude"), Some("sk-ant-oat01-ABC"));
+        let agent = config.agent.clone().unwrap();
+        assert_eq!(agent.command, "/usr/bin/claude");
+        assert_eq!(agent.oauth_token.as_deref(), Some("sk-ant-oat01-ABC"));
+        assert!(!format!("{config:?}").contains("ABC"));
+        assert_eq!(
+            with(Some("claude"), Some("")).agent.unwrap().oauth_token,
+            None
+        );
     }
 }

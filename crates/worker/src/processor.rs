@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 use sw_domain::workflow::Step;
 use sw_engine::netguard::Policy;
 use sw_engine::scheduler::{self, Action, Plan, RunOutcome, StepState};
+use sw_engine::steps::agent::ClaudeCli;
 use sw_engine::steps::{self, Integration, Services, StepOutcome};
 use sw_infrastructure::crypto::Keyring;
 use sw_infrastructure::runs::{self, Parked, Run, RunError};
@@ -25,6 +26,7 @@ pub struct Settings {
     pub max_concurrent_runs: usize,
     pub retention_days: u32,
     pub keyring: Keyring,
+    pub agent: Option<Arc<ClaudeCli>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -337,6 +339,9 @@ async fn build_services(
         }
     }
     let mut services = Services::new(settings.policy.clone(), usable);
+    if let Some(agent) = &settings.agent {
+        services = services.with_agent(agent.clone());
+    }
     for (name, reason) in unavailable {
         services = services.mark_unavailable(name, reason);
     }
@@ -451,6 +456,7 @@ mod tests {
             policy: Policy::parse_allowed("127.0.0.0/8").unwrap(),
             max_concurrent_runs: 1,
             retention_days: 0,
+            agent: None,
             keyring: Keyring::parse(&format!("k1={}", "03".repeat(32)), Some("k1")).unwrap(),
         };
         Env {
@@ -1136,5 +1142,49 @@ mod tests {
             .await
             .unwrap();
         assert!(events.is_empty());
+    }
+
+    fn fake_claude(dir: &std::path::Path, reply: &str) -> Arc<ClaudeCli> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("claude");
+        std::fs::write(&path, format!("#!/bin/sh\necho '{reply}'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Arc::new(ClaudeCli::new(path, None))
+    }
+
+    const AGENT: &str = "    - {id: triage, type: agent.run, with: {prompt: 'Résume ${{ event.payload.alert }}'}}\n    \
+                         - {id: after, type: transform, needs: [triage], with: {value: '${{ steps.triage.output.result }}'}}\n";
+
+    #[tokio::test]
+    async fn an_agent_step_runs_through_the_configured_cli_and_feeds_the_next_step() {
+        let mut env = env().await;
+        let dir = tempfile::tempdir().unwrap();
+        env.settings.agent = Some(fake_claude(
+            dir.path(),
+            r#"{"result":"RAS","is_error":false,"total_cost_usd":0,"num_turns":1}"#,
+        ));
+        let run = queued(&env, AGENT, json!({ "alert": "disque plein" })).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        assert_eq!(
+            runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
+            "succeeded"
+        );
+        let rows = runs::steps(&env.pool, &run.id).await.unwrap();
+        let after = rows.iter().find(|row| row.step_id == "after").unwrap();
+        assert!(after.output.as_deref().unwrap().contains("RAS"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_step_fails_clearly_when_no_runner_is_configured() {
+        let env = env().await;
+        let run = queued(&env, AGENT, json!({ "alert": "x" })).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "failed");
+        assert!(done.error.unwrap().contains("SW_AGENT_COMMAND"));
     }
 }
