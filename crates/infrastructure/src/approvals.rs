@@ -148,7 +148,7 @@ pub async fn decide(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(get(pool, id).await?.ok_or(ApprovalError::NotFound)?)
+    get(pool, id).await?.ok_or(ApprovalError::NotFound)
 }
 
 #[cfg(test)]

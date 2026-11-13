@@ -83,6 +83,33 @@ pub fn delay_seconds(with: &Value, vars: &Value) -> Result<u64, String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalRequest {
+    pub message: Option<String>,
+    pub timeout_seconds: Option<u64>,
+}
+
+pub fn approval_request(with: &Value, vars: &Value) -> Result<ApprovalRequest, String> {
+    let message = match with.get("message") {
+        None | Some(Value::Null) => None,
+        Some(raw) => match expr::render(raw, vars).map_err(|err| err.to_string())? {
+            Value::String(text) => Some(text),
+            other => Some(other.to_string()),
+        },
+    };
+    let timeout_seconds = match with.get("timeout_seconds") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(
+            delay_seconds(&json!({ "seconds": with["timeout_seconds"] }), vars)
+                .map_err(|err| err.replace("with.seconds", "with.timeout_seconds"))?,
+        ),
+    };
+    Ok(ApprovalRequest {
+        message,
+        timeout_seconds,
+    })
+}
+
 fn condition(with: &Value, vars: &Value) -> StepOutcome {
     let Some(expression) = with.get("expression").and_then(Value::as_str) else {
         return StepOutcome::fatal("`with.expression` est requis et doit être une chaîne");
@@ -222,5 +249,25 @@ mod tests {
             delay_seconds(&json!({ "seconds": MAX_DELAY_SECS }), &vars),
             Ok(MAX_DELAY_SECS)
         );
+    }
+
+    #[test]
+    fn approval_request_reads_message_and_optional_timeout() {
+        let vars = json!({ "event": { "payload": { "service": "api" } } });
+        let request = approval_request(
+            &json!({ "message": "Déployer ${{ event.payload.service }} ?", "timeout_seconds": 600 }),
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(request.message.as_deref(), Some("Déployer api ?"));
+        assert_eq!(request.timeout_seconds, Some(600));
+        let bare = approval_request(&json!({}), &vars).unwrap();
+        assert_eq!((bare.message, bare.timeout_seconds), (None, None));
+    }
+
+    #[test]
+    fn approval_request_rejects_a_bad_timeout() {
+        let error = approval_request(&json!({ "timeout_seconds": 0 }), &json!({})).unwrap_err();
+        assert!(error.contains("timeout_seconds"), "{error}");
     }
 }

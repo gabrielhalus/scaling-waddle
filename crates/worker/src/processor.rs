@@ -8,9 +8,9 @@ use sw_domain::workflow::Step;
 use sw_engine::netguard::Policy;
 use sw_engine::scheduler::{self, Action, Plan, RunOutcome, StepState};
 use sw_engine::steps::{self, Integration, Services, StepOutcome};
-use sw_infrastructure::runs::{self, Run, RunError};
+use sw_infrastructure::runs::{self, Parked, Run, RunError};
 use sw_infrastructure::workflows::WorkflowError;
-use sw_infrastructure::{integrations, workflows};
+use sw_infrastructure::{approvals, integrations, workflows};
 use tokio::task::{JoinHandle, JoinSet};
 
 const MAX_BACKOFF_SECS: u64 = 3600;
@@ -157,16 +157,18 @@ pub async fn process_run(
 
         let actions = scheduler::decide(&plan, &states, &vars);
         if actions.is_empty() {
-            if let Some(wake_at) = rows
-                .iter()
-                .filter(|row| row.status == "waiting")
-                .filter_map(|row| row.wake_at)
-                .min()
-            {
-                if !runs::park(pool, &run.id, &settings.owner, wake_at).await? {
-                    tracing::warn!(run_id = %run.id, "run non suspendu : bail perdu");
+            let waiting: Vec<&runs::StepRun> =
+                rows.iter().filter(|row| row.status == "waiting").collect();
+            if !waiting.is_empty() {
+                let wake_at = waiting.iter().filter_map(|row| row.wake_at).min();
+                match runs::park(pool, &run.id, &settings.owner, wake_at).await? {
+                    Parked::Parked => return Ok(()),
+                    Parked::NothingWaiting => continue,
+                    Parked::LostLease => {
+                        tracing::warn!(run_id = %run.id, "run non suspendu : bail perdu");
+                        return Ok(());
+                    }
                 }
-                return Ok(());
             }
             runs::finish(
                 pool,
@@ -193,6 +195,10 @@ pub async fn process_run(
                     };
                     if step.kind == "delay" {
                         start_delay(pool, &run.id, &step, &vars).await?;
+                        continue;
+                    }
+                    if step.kind == "approval" {
+                        start_approval(pool, &run.id, &step, &vars).await?;
                         continue;
                     }
                     tasks.spawn(run_step(
@@ -226,7 +232,7 @@ async fn start_delay(
                 pool,
                 run_id,
                 &step.id,
-                wake_at,
+                Some(wake_at),
                 &json!({ "seconds": seconds }),
             )
             .await
@@ -235,10 +241,42 @@ async fn start_delay(
     }
 }
 
+async fn start_approval(
+    pool: &SqlitePool,
+    run_id: &str,
+    step: &Step,
+    vars: &Value,
+) -> Result<(), RunError> {
+    let request = match steps::approval_request(&step.with, vars) {
+        Ok(request) => request,
+        Err(error) => {
+            return runs::set_step(pool, run_id, &step.id, "failed", None, Some(&error), 0).await;
+        }
+    };
+    let id = approvals::request(pool, run_id, &step.id, request.message.as_deref()).await?;
+    let wake_at = request
+        .timeout_seconds
+        .map(|seconds| now_ms().saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX) * 1000));
+    runs::wait_step(
+        pool,
+        run_id,
+        &step.id,
+        wake_at,
+        &json!({ "approval_id": id }),
+    )
+    .await
+}
+
 async fn wake_due_steps(pool: &SqlitePool, run_id: &str) -> Result<(), RunError> {
     let now = now_ms();
     for row in runs::steps(pool, run_id).await? {
         if row.status == "waiting" && row.wake_at.is_some_and(|at| at <= now) {
+            if approvals::is_pending(pool, run_id, &row.step_id).await? {
+                approvals::expire(pool, run_id, &row.step_id).await?;
+                let error = "délai d'approbation dépassé";
+                runs::set_step(pool, run_id, &row.step_id, "failed", None, Some(error), 1).await?;
+                continue;
+            }
             let output: Option<Value> = row
                 .output
                 .as_deref()
@@ -657,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn unimplemented_step_types_fail_the_run() {
         let env = env().await;
-        let run = queued(&env, "    - {id: ask, type: approval}\n", json!({})).await;
+        let run = queued(&env, "    - {id: ask, type: notification}\n", json!({})).await;
 
         process_run(&env.pool, &run, &env.settings).await.unwrap();
 
@@ -819,6 +857,125 @@ mod tests {
         assert!(
             (expected - wake_at).abs() < 5_000,
             "{wake_at} vs {expected}"
+        );
+    }
+
+    const APPROVAL: &str = "    - {id: ask, type: approval, with: {message: 'Déployer ?'}}\n    \
+                            - {id: go, type: transform, needs: [ask], with: {value: 1}}\n";
+
+    async fn pending_approval(env: &Env, run_id: &str) -> approvals::Approval {
+        let listed = approvals::list(&env.pool, Some("pending"), 10)
+            .await
+            .unwrap();
+        listed.into_iter().find(|a| a.run_id == run_id).unwrap()
+    }
+
+    async fn resume(env: &Env) -> runs::Run {
+        runs::claim(&env.pool, "w1", now_ms(), 30_000)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_approval_parks_the_run_without_a_wake_time() {
+        let env = env().await;
+        let run = queued(&env, APPROVAL, json!({})).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let parked = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!((parked.status.as_str(), parked.wake_at), ("waiting", None));
+        let approval = pending_approval(&env, &run.id).await;
+        assert_eq!(approval.message.as_deref(), Some("Déployer ?"));
+        assert!(
+            runs::claim(&env.pool, "w1", i64::MAX / 2, 1000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approved_run_continues_after_the_gate() {
+        let env = env().await;
+        let run = queued(&env, APPROVAL, json!({})).await;
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+        let approval = pending_approval(&env, &run.id).await;
+        approvals::decide(&env.pool, &approval.id, true, "u1", None)
+            .await
+            .unwrap();
+
+        let woken = resume(&env).await;
+        process_run(&env.pool, &woken, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "succeeded");
+        assert_eq!(
+            statuses(&env, &run.id).await,
+            pairs(&[("ask", "succeeded"), ("go", "succeeded")])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_approval_fails_the_run_and_skips_what_follows() {
+        let env = env().await;
+        let run = queued(&env, APPROVAL, json!({})).await;
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+        let approval = pending_approval(&env, &run.id).await;
+        approvals::decide(&env.pool, &approval.id, false, "u1", Some("non"))
+            .await
+            .unwrap();
+
+        let woken = resume(&env).await;
+        process_run(&env.pool, &woken, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "failed");
+        assert!(done.error.unwrap().contains("refusée"));
+        assert_eq!(
+            statuses(&env, &run.id).await,
+            pairs(&[("ask", "failed"), ("go", "skipped")])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approval_that_times_out_expires_and_fails_the_step() {
+        let env = env().await;
+        let run = queued(
+            &env,
+            "    - {id: ask, type: approval, with: {timeout_seconds: 30}}\n",
+            json!({}),
+        )
+        .await;
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+        wake_now(&env, &run.id).await;
+
+        let woken = resume(&env).await;
+        process_run(&env.pool, &woken, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "failed");
+        assert!(done.error.unwrap().contains("délai d'approbation"));
+        let listed = approvals::list(&env.pool, Some("expired"), 10)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_approval_timeout_fails_the_step() {
+        let env = env().await;
+        let run = queued(
+            &env,
+            "    - {id: ask, type: approval, with: {timeout_seconds: 0}}\n",
+            json!({}),
+        )
+        .await;
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+        assert_eq!(
+            runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
+            "failed"
         );
     }
 }
