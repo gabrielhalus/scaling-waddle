@@ -5,6 +5,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sw_domain::workflow::event_matches;
+use sw_infrastructure::workflows;
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -51,6 +53,24 @@ fn same_secret(a: &str, b: &str) -> bool {
     Sha256::digest(a.as_bytes()) == Sha256::digest(b.as_bytes())
 }
 
+// Un événement hors filtre est acquitté (202) sans créer de run, pour ne pas faire réessayer l'émetteur.
+async fn filtered_out(
+    state: &AppState,
+    workflow_id: &str,
+    kind: &str,
+) -> Result<Option<(StatusCode, Json<Value>)>, ApiError> {
+    let accepted = match workflows::accepted_events(&state.db, workflow_id).await? {
+        None => true,
+        Some(patterns) => event_matches(&patterns, kind),
+    };
+    Ok((!accepted).then(|| {
+        (
+            StatusCode::ACCEPTED,
+            Json(json!({ "ignored": true, "kind": kind })),
+        )
+    }))
+}
+
 async fn gitlab(
     State(state): State<AppState>,
     Path(token): Path<String>,
@@ -66,6 +86,9 @@ async fn gitlab(
         }
     }
     let kind = gitlab_kind(&headers, &parse_payload(&body)?);
+    if let Some(ignored) = filtered_out(&state, &resolved.workflow_id, &kind).await? {
+        return Ok(ignored);
+    }
     ingest(
         &state,
         &resolved.workflow_id,
@@ -106,6 +129,9 @@ async fn uptime_kuma(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let resolved = resolve_token(&state, &token).await?;
     let (kind, normalized) = uptime_kuma_event(&parse_payload(&body)?);
+    if let Some(ignored) = filtered_out(&state, &resolved.workflow_id, &kind).await? {
+        return Ok(ignored);
+    }
     ingest(
         &state,
         &resolved.workflow_id,
@@ -286,5 +312,87 @@ mod tests {
         }
         let (status, _) = call(&h, "uptime-kuma", &token, &[], &json!({})).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    const FILTERED: &str = "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {name: filtered, project: p}\n\
+        spec:\n  trigger: {type: gitlab, config: {events: ['gitlab.push', 'uptime-kuma.down']}}\n  steps:\n    - {id: a, type: transform, with: {value: 1}}\n";
+
+    async fn filtered_token(h: &Harness) -> String {
+        let (_, imported) = send(
+            &h.app,
+            "POST",
+            "/api/v1/workflows/import",
+            &crate::testing::bearer(&h.admin),
+            Some(("application/yaml", FILTERED.to_owned())),
+        )
+        .await;
+        let wf = imported["id"].as_str().unwrap().to_owned();
+        h.post(
+            &format!("/api/v1/workflows/{wf}/activate"),
+            json!({ "version": 1 }),
+        )
+        .await;
+        let (_, body) = h
+            .post(&format!("/api/v1/workflows/{wf}/webhook-tokens"), json!({}))
+            .await;
+        body["token"].as_str().unwrap().to_owned()
+    }
+
+    async fn run_count(h: &Harness) -> usize {
+        let (_, runs) = h.get("/api/v1/runs").await;
+        runs.as_array().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn events_outside_the_trigger_filter_are_acknowledged_without_a_run() {
+        let h = harness().await;
+        let token = filtered_token(&h).await;
+        let (status, body) = call(
+            &h,
+            "gitlab",
+            &token,
+            &[],
+            &json!({ "object_kind": "merge_request" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(
+            (&body["ignored"], &body["kind"]),
+            (&json!(true), &json!("gitlab.merge_request"))
+        );
+        assert_eq!(run_count(&h).await, 0);
+        let (status, body) =
+            call(&h, "gitlab", &token, &[], &json!({ "object_kind": "push" })).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(body.get("ignored").is_none() && body["run_id"].is_string());
+        assert_eq!(run_count(&h).await, 1);
+    }
+
+    #[tokio::test]
+    async fn the_filter_also_applies_to_uptime_kuma_events() {
+        let h = harness().await;
+        let token = filtered_token(&h).await;
+        let up = json!({ "heartbeat": { "status": 1 }, "monitor": { "name": "API" } });
+        let (_, body) = call(&h, "uptime-kuma", &token, &[], &up).await;
+        assert_eq!(body["ignored"], true);
+        let down = json!({ "heartbeat": { "status": 0 }, "monitor": { "name": "API" } });
+        let (_, body) = call(&h, "uptime-kuma", &token, &[], &down).await;
+        assert!(body["run_id"].is_string());
+        assert_eq!(run_count(&h).await, 1);
+    }
+
+    #[tokio::test]
+    async fn without_a_filter_every_event_starts_a_run() {
+        let h = harness().await;
+        let (_, token, _) = token(&h, false).await;
+        call(
+            &h,
+            "gitlab",
+            &token,
+            &[],
+            &json!({ "object_kind": "anything" }),
+        )
+        .await;
+        assert_eq!(run_count(&h).await, 1);
     }
 }
