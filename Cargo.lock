@@ -2165,11 +2165,16 @@ dependencies = [
 name = "sw-worker"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sqlx",
+ "sw-domain",
+ "sw-engine",
  "sw-infrastructure",
  "tempfile",
+ "thiserror",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]

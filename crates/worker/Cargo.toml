@@ -5,13 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sw-domain = { path = "../domain" }
+sw-engine = { path = "../engine" }
 sw-infrastructure = { path = "../infrastructure" }
+serde_json.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"
 
 [lints]
 workspace = true
