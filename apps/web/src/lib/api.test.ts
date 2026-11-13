@@ -198,4 +198,62 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/audit')
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/audit?action=run.cancel')
   })
+
+  it('imports a workflow as YAML with the right content type', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(201, { id: 'w1', version: 1, created: true }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    const result = await client.importWorkflow('apiVersion: x')
+
+    expect(result).toEqual({ id: 'w1', version: 1, created: true })
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows/import')
+    expect(new Headers(init.headers).get('content-type')).toBe('application/yaml')
+    expect(init.body).toBe('apiVersion: x')
+  })
+
+  it('reads a workflow, activates, deactivates and exports it as text', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => json(200, { workflow: {}, versions: [] }))
+      .mockImplementationOnce(async () => new Response(null, { status: 204 }))
+      .mockImplementationOnce(async () => new Response(null, { status: 204 }))
+      .mockImplementationOnce(async () => new Response('name: demo\n', { status: 200 }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.workflow('w 1')
+    await client.activateWorkflow('w1', 2)
+    await client.deactivateWorkflow('w1')
+    const yaml = await client.exportWorkflow('w1', 2)
+
+    expect(yaml).toBe('name: demo\n')
+    const calls = fetchMock.mock.calls.map((c) => [c[0], (c[1] as RequestInit | undefined)?.method])
+    expect(calls).toEqual([
+      ['/api/v1/workflows/w%201', undefined],
+      ['/api/v1/workflows/w1/activate', 'POST'],
+      ['/api/v1/workflows/w1/deactivate', 'POST'],
+      ['/api/v1/workflows/w1/export?version=2&format=yaml', undefined],
+    ])
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({ version: 2 })
+  })
+
+  it('triggers a manual run and manages webhook tokens', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.triggerRun('w1', { a: 1 })
+    await client.webhookTokens('w1')
+    await client.issueWebhookToken('w1', true)
+    await client.revokeWebhookToken('w1', 't 1')
+
+    const calls = fetchMock.mock.calls.map((c) => [c[0], (c[1] as RequestInit | undefined)?.method])
+    expect(calls).toEqual([
+      ['/api/v1/workflows/w1/runs', 'POST'],
+      ['/api/v1/workflows/w1/webhook-tokens', undefined],
+      ['/api/v1/workflows/w1/webhook-tokens', 'POST'],
+      ['/api/v1/workflows/w1/webhook-tokens/t%201', 'DELETE'],
+    ])
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ a: 1 })
+    expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string)).toEqual({ signed: true })
+  })
 })

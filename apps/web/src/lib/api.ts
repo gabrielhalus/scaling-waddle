@@ -56,6 +56,19 @@ export type Approval = {
   comment: string | null
 }
 
+export type WorkflowVersion = { version: number; hash: string; created_at: string }
+
+export type WorkflowDetail = { workflow: Workflow; versions: WorkflowVersion[] }
+
+export type WebhookToken = {
+  id: string
+  created_at: string
+  revoked_at: string | null
+  signed: boolean
+}
+
+export type IssuedWebhookToken = { id: string; token: string; signing_secret: string | null }
+
 export type Integration = {
   id: string
   project: string
@@ -136,7 +149,7 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
 
   async function send(path: string, init: RequestInit = {}, withAuth = true) {
     const headers = new Headers(init.headers)
-    if (init.body) headers.set('content-type', 'application/json')
+    if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
     const access = storage.get()?.access
     if (withAuth && access) headers.set('authorization', `Bearer ${access}`)
     return fetcher(path, { ...init, headers })
@@ -176,6 +189,13 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
     }
     if (!res.ok) throw await failure(res)
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
+  }
+
+  async function requestText(path: string): Promise<string> {
+    let res = await send(path)
+    if (res.status === 401 && storage.get() && (await refresh())) res = await send(path)
+    if (!res.ok) throw await failure(res)
+    return res.text()
   }
 
   async function authenticate(path: string, email: string, password: string) {
@@ -248,6 +268,39 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
     audit: (filter: { action?: string } = {}) =>
       request<AuditEvent[]>(
         `/api/v1/audit${filter.action ? `?action=${encodeURIComponent(filter.action)}` : ''}`,
+      ),
+    workflow: (id: string) => request<WorkflowDetail>(`/api/v1/workflows/${encodeURIComponent(id)}`),
+    importWorkflow: (definition: string) =>
+      request<{ id: string; version: number; created: boolean }>('/api/v1/workflows/import', {
+        method: 'POST',
+        body: definition,
+        headers: { 'content-type': 'application/yaml' },
+      }),
+    activateWorkflow: (id: string, version: number) =>
+      request<void>(`/api/v1/workflows/${encodeURIComponent(id)}/activate`, {
+        method: 'POST',
+        body: JSON.stringify({ version }),
+      }),
+    deactivateWorkflow: (id: string) =>
+      request<void>(`/api/v1/workflows/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }),
+    exportWorkflow: (id: string, version: number) =>
+      requestText(`/api/v1/workflows/${encodeURIComponent(id)}/export?version=${version}&format=yaml`),
+    triggerRun: (id: string, payload: unknown) =>
+      request<{ run_id: string }>(`/api/v1/workflows/${encodeURIComponent(id)}/runs`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    webhookTokens: (id: string) =>
+      request<WebhookToken[]>(`/api/v1/workflows/${encodeURIComponent(id)}/webhook-tokens`),
+    issueWebhookToken: (id: string, signed: boolean) =>
+      request<IssuedWebhookToken>(`/api/v1/workflows/${encodeURIComponent(id)}/webhook-tokens`, {
+        method: 'POST',
+        body: JSON.stringify({ signed }),
+      }),
+    revokeWebhookToken: (id: string, tokenId: string) =>
+      request<void>(
+        `/api/v1/workflows/${encodeURIComponent(id)}/webhook-tokens/${encodeURIComponent(tokenId)}`,
+        { method: 'DELETE' },
       ),
     isAuthenticated: () => storage.get() !== null,
   }
