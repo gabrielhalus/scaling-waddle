@@ -1102,15 +1102,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_finished_run_leaves_an_audit_entry_but_a_parked_one_does_not() {
-        let env = env().await;
+        let first = env().await;
         let done = queued(
-            &env,
+            &first,
             "    - {id: a, type: transform, with: {value: 1}}\n",
             json!({}),
         )
         .await;
-        process_run(&env.pool, &done, &env.settings).await.unwrap();
-        let events = audit::list(&env.pool, Some("run.finished"), None, 10)
+        process_run(&first.pool, &done, &first.settings)
+            .await
+            .unwrap();
+        let events = audit::list(&first.pool, Some("run.finished"), None, 10)
             .await
             .unwrap();
         assert_eq!(events.len(), 1);
