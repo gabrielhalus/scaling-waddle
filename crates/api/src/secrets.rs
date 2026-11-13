@@ -9,6 +9,7 @@ use sw_infrastructure::secrets::{self, SecretError};
 use sw_infrastructure::webhook_tokens;
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 
@@ -78,6 +79,15 @@ async fn store(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     secrets::set(&state.db, &state.keyring, &project, &name, &body.value).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "secret.set",
+        "secret",
+        &name,
+        json!({ "project": project }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -88,6 +98,15 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     if secrets::delete(&state.db, &project, &name).await? {
+        audit::record(
+            &state,
+            &auth.id,
+            "secret.delete",
+            "secret",
+            &name,
+            json!({ "project": project }),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -98,6 +117,15 @@ async fn rotate(State(state): State<AppState>, auth: AuthUser) -> Result<Json<Va
     auth.require_admin()?;
     let secrets = secrets::rotate(&state.db, &state.keyring).await?;
     let signing = webhook_tokens::rotate(&state.db, &state.keyring).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "secret.rotate",
+        "secret",
+        "*",
+        json!({ "rotated": secrets + signing }),
+    )
+    .await;
     Ok(Json(json!({ "rotated": secrets + signing })))
 }
 

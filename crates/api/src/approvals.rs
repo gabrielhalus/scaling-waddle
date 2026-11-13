@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use sw_infrastructure::approvals::{self, Approval, ApprovalError};
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 
@@ -120,6 +121,19 @@ async fn decide(
     }
     let decided =
         approvals::decide(&state.db, &id, approve, &auth.id, body.comment.as_deref()).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        if approve {
+            "approval.approve"
+        } else {
+            "approval.reject"
+        },
+        "approval",
+        &id,
+        json!({ "run_id": decided.run_id, "step_id": decided.step_id }),
+    )
+    .await;
     Ok(Json(approval_json(&decided)))
 }
 

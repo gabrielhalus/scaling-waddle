@@ -11,6 +11,7 @@ use sw_infrastructure::jwt::TokenKind;
 use sw_infrastructure::{password, refresh_tokens, users};
 
 use crate::AppState;
+use crate::audit;
 use crate::error::ApiError;
 use crate::state::{ACCESS_TTL_SECS, REFRESH_TTL_SECS};
 
@@ -160,6 +161,15 @@ async fn setup(
     let user = users::create_first_admin(&state.db, &email, &hash)
         .await?
         .ok_or(ApiError::Conflict("l'installation est déjà faite"))?;
+    audit::record(
+        &state,
+        &user.id,
+        "auth.setup",
+        "user",
+        &user.id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(issue(&state, &user).await?)))
 }
 
@@ -182,10 +192,28 @@ async fn login(
     match user {
         Some(user) if ok => {
             state.login_limiter.clear(&email);
+            audit::record(
+                &state,
+                &user.id,
+                "auth.login",
+                "user",
+                &user.id,
+                serde_json::json!({}),
+            )
+            .await;
             Ok(Json(issue(&state, &user).await?))
         }
         _ => {
             state.login_limiter.record_failure(&email, Instant::now());
+            audit::record(
+                &state,
+                "anonymous",
+                "auth.login_failed",
+                "user",
+                &email,
+                serde_json::json!({}),
+            )
+            .await;
             Err(ApiError::Unauthorized)
         }
     }
@@ -210,6 +238,15 @@ async fn refresh(
 
 async fn logout(State(state): State<AppState>, auth: AuthUser) -> Result<StatusCode, ApiError> {
     refresh_tokens::revoke_all(&state.db, &auth.id).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "auth.logout",
+        "user",
+        &auth.id,
+        serde_json::json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

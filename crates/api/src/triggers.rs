@@ -11,6 +11,7 @@ use sw_infrastructure::runs::{self, NewEvent, RunError};
 use sw_infrastructure::{webhook_tokens, workflows};
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::signature;
@@ -171,7 +172,17 @@ async fn manual_run(
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     auth.require_writer()?;
-    ingest(&state, &id, "manual", "manual.run", &headers, &body).await
+    let result = ingest(&state, &id, "manual", "manual.run", &headers, &body).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "run.trigger",
+        "workflow",
+        &id,
+        json!({ "run_id": result.1.0["run_id"] }),
+    )
+    .await;
+    Ok(result)
 }
 
 async fn require_workflow(state: &AppState, id: &str) -> Result<(), ApiError> {
@@ -197,6 +208,15 @@ async fn issue_token(
             .signed
     };
     let issued = webhook_tokens::issue(&state.db, &state.keyring, &id, signed).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "webhook_token.issue",
+        "workflow",
+        &id,
+        json!({ "token_id": issued.id, "signed": signed }),
+    )
+    .await;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -236,6 +256,15 @@ async fn revoke_token(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     if webhook_tokens::revoke(&state.db, &id, &token_id).await? {
+        audit::record(
+            &state,
+            &auth.id,
+            "webhook_token.revoke",
+            "workflow",
+            &id,
+            json!({ "token_id": token_id }),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)

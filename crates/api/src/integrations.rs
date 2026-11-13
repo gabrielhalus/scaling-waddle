@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sw_infrastructure::integrations::{self, IntegrationError, IntegrationRecord};
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 
@@ -117,6 +118,15 @@ async fn create(
         &input.headers,
     )
     .await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "integration.create",
+        "integration",
+        &record.id,
+        json!({ "project": record.project, "name": record.name }),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(record_json(&record))))
 }
 
@@ -127,6 +137,15 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     if integrations::delete(&state.db, &id).await? {
+        audit::record(
+            &state,
+            &auth.id,
+            "integration.delete",
+            "integration",
+            &id,
+            json!({}),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)

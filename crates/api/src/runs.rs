@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use sw_infrastructure::runs::{self, Cancellation, Run, StepRun};
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 
@@ -131,6 +132,15 @@ async fn cancel(
         Cancellation::Cancelled => "cancelled",
         Cancellation::Requested => "cancelling",
     };
+    audit::record(
+        &state,
+        &auth.id,
+        "run.cancel",
+        "run",
+        &id,
+        json!({ "status": status }),
+    )
+    .await;
     Ok(Json(json!({ "run_id": id, "status": status })))
 }
 
@@ -141,6 +151,15 @@ async fn retry(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     auth.require_writer()?;
     let run_id = runs::retry(&state.db, &id).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "run.retry",
+        "run",
+        &id,
+        json!({ "new_run_id": run_id }),
+    )
+    .await;
     Ok((StatusCode::ACCEPTED, Json(json!({ "run_id": run_id }))))
 }
 

@@ -9,6 +9,7 @@ use sw_domain::workflow::Workflow;
 use sw_infrastructure::workflows::{self, WorkflowError, WorkflowRecord};
 
 use crate::AppState;
+use crate::audit;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
 
@@ -109,6 +110,15 @@ async fn create(
     auth.require_writer()?;
     let workflow = parse_definition(&headers, &body)?;
     let record = workflows::create(&state.db, &workflow).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "workflow.create",
+        "workflow",
+        &record.id,
+        json!({ "name": record.name, "project": record.project }),
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(record_json(&record))))
 }
 
@@ -122,6 +132,15 @@ async fn add_version(
     auth.require_writer()?;
     let workflow = parse_definition(&headers, &body)?;
     let version = workflows::add_version(&state.db, &id, &workflow).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "workflow.version",
+        "workflow",
+        &id,
+        json!({ "version": version }),
+    )
+    .await;
     Ok(Json(json!({ "version": version })))
 }
 
@@ -133,6 +152,15 @@ async fn activate(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     workflows::activate(&state.db, &id, activation.version).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "workflow.activate",
+        "workflow",
+        &id,
+        json!({ "version": activation.version }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -143,6 +171,15 @@ async fn deactivate(
 ) -> Result<StatusCode, ApiError> {
     auth.require_writer()?;
     workflows::deactivate(&state.db, &id).await?;
+    audit::record(
+        &state,
+        &auth.id,
+        "workflow.deactivate",
+        "workflow",
+        &id,
+        json!({}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
