@@ -145,4 +145,19 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0]).toEqual(['/api/v1/runs/r1/cancel', expect.objectContaining({ method: 'POST' })])
     expect(fetchMock.mock.calls[1]).toEqual(['/api/v1/runs/r1/retry', expect.objectContaining({ method: 'POST' })])
   })
+
+  it('lists approvals by status and posts a decision', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.approvals('pending')
+    await client.approvals()
+    await client.decideApproval('a 1', 'approve', 'ok')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/approvals?status=pending')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/approvals')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/approvals/a%201/decision')
+    const init = fetchMock.mock.calls[2][1] as RequestInit
+    expect(JSON.parse(init.body as string)).toEqual({ decision: 'approve', comment: 'ok' })
+  })
 })

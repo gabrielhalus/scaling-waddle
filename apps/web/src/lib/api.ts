@@ -42,6 +42,20 @@ export type RunDetail = {
   steps: StepRun[]
 }
 
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled'
+
+export type Approval = {
+  id: string
+  run_id: string
+  step_id: string
+  status: ApprovalStatus
+  message: string | null
+  requested_at: string
+  decided_by: string | null
+  decided_at: string | null
+  comment: string | null
+}
+
 type TokenResponse = { access_token: string; refresh_token: string; expires_in: number }
 
 export type TokenStorage = {
@@ -180,6 +194,13 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
       }),
     retryRun: (id: string) =>
       request<{ run_id: string }>(`/api/v1/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
+    approvals: (status?: ApprovalStatus) =>
+      request<Approval[]>(`/api/v1/approvals${status ? `?status=${status}` : ''}`),
+    decideApproval: (id: string, decision: 'approve' | 'reject', comment?: string) =>
+      request<Approval>(`/api/v1/approvals/${encodeURIComponent(id)}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ decision, comment }),
+      }),
     isAuthenticated: () => storage.get() !== null,
   }
 }

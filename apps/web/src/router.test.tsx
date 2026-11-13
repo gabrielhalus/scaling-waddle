@@ -13,6 +13,7 @@ function fakeClient(authenticated: boolean) {
     health: vi.fn().mockResolvedValue({ status: 'ok', database: 'ok' }),
     workflows: vi.fn().mockResolvedValue([]),
     runs: vi.fn().mockResolvedValue([]),
+    approvals: vi.fn().mockResolvedValue([]),
   } as unknown as ApiClient
 }
 
@@ -49,5 +50,11 @@ describe('App routing', () => {
     window.history.replaceState(null, '', '/runs')
     render(<App client={fakeClient(false)} />)
     expect(await screen.findByRole('button', { name: 'Se connecter' })).toBeInTheDocument()
+  })
+
+  it('opens the approvals page from the navigation', async () => {
+    render(<App client={fakeClient(true)} />)
+    await userEvent.click(await screen.findByRole('link', { name: 'Approbations' }))
+    expect(await screen.findByText('Aucune demande.')).toBeInTheDocument()
   })
 })

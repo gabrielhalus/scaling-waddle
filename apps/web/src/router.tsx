@@ -14,6 +14,7 @@ import {
 import type { ApiClient } from './lib/api'
 import { ClientProvider } from './lib/client-context'
 import { LoginPage } from './pages/login'
+import { ApprovalsPage } from './pages/approvals'
 import { OverviewPage } from './pages/overview'
 import { RunDetailPage } from './pages/run-detail'
 import { RunsPage } from './pages/runs'
@@ -40,6 +41,9 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
             </Link>
             <Link to="/runs" className="[&.active]:font-semibold">
               Runs
+            </Link>
+            <Link to="/approvals" className="[&.active]:font-semibold">
+              Approbations
             </Link>
           </nav>
           <main>
@@ -96,6 +100,19 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
     },
   })
 
+  const approvals = createRoute({
+    getParentRoute: () => shell,
+    path: '/approvals',
+    component: function Approvals() {
+      const navigate = useNavigate()
+      return (
+        <ApprovalsPage
+          onOpenRun={(runId) => void navigate({ to: '/runs/$runId', params: { runId } })}
+        />
+      )
+    },
+  })
+
   const runDetail = createRoute({
     getParentRoute: () => shell,
     path: '/runs/$runId',
@@ -124,7 +141,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
     },
   })
 
-  return createRouter({ routeTree: root.addChildren([shell.addChildren([overview, workflows, runs, runDetail]), login]) })
+  return createRouter({ routeTree: root.addChildren([shell.addChildren([overview, workflows, runs, runDetail, approvals]), login]) })
 }
 
 export function App({ client }: { client: ApiClient }) {
