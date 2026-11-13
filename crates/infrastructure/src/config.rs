@@ -59,7 +59,9 @@ impl Config {
         };
         let keyring = Keyring::parse(
             &lookup("SW_SECRET_KEYS").unwrap_or_default(),
-            lookup("SW_SECRET_ACTIVE_KEY").as_deref(),
+            lookup("SW_SECRET_ACTIVE_KEY")
+                .filter(|id| !id.trim().is_empty())
+                .as_deref(),
         )?;
         Ok(Self {
             database_path: lookup("SW_DATABASE_PATH")
@@ -203,5 +205,16 @@ mod tests {
             with(Some(format!("k1={key}")), None),
             Err(ConfigError::SecretKeys(_))
         ));
+    }
+
+    #[test]
+    fn empty_secret_variables_mean_disabled() {
+        let config = Config::from_lookup(|key| match key {
+            "SW_JWT_SECRET" => Some(SECRET.to_owned()),
+            "SW_SECRET_KEYS" | "SW_SECRET_ACTIVE_KEY" => Some(String::new()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(!config.keyring.is_enabled());
     }
 }
