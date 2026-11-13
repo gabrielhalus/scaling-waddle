@@ -1,8 +1,11 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sw_infrastructure::runs::{self, NewEvent, RunError};
 use sw_infrastructure::{webhook_tokens, workflows};
@@ -10,6 +13,7 @@ use sw_infrastructure::{webhook_tokens, workflows};
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::ApiError;
+use crate::signature;
 
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 
@@ -104,18 +108,46 @@ async fn ingest(
     ))
 }
 
+#[derive(Deserialize)]
+struct IssueRequest {
+    #[serde(default)]
+    signed: bool,
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
 async fn webhook(
     State(state): State<AppState>,
     Path(token): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let workflow_id = webhook_tokens::resolve(&state.db, &token)
+    let resolved = webhook_tokens::resolve(&state.db, &token)
         .await?
         .ok_or(ApiError::NotFound)?;
+    if let Some(secret) = &resolved.signing_secret {
+        let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+        signature::verify(
+            secret,
+            header("x-sw-timestamp"),
+            header("x-sw-signature"),
+            &body,
+            now_secs(),
+        )
+        .map_err(|reason| {
+            tracing::warn!(?reason, "signature de webhook refusée");
+            ApiError::Unauthorized
+        })?;
+    }
     ingest(
         &state,
-        &workflow_id,
+        &resolved.workflow_id,
         "webhook",
         "webhook.received",
         &headers,
@@ -146,13 +178,25 @@ async fn issue_token(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     auth.require_writer()?;
     require_workflow(&state, &id).await?;
-    let issued = webhook_tokens::issue(&state.db, &id).await?;
+    let signed = if body.is_empty() {
+        false
+    } else {
+        serde_json::from_slice::<IssueRequest>(&body)
+            .map_err(|_| ApiError::BadRequest("corps JSON invalide".into()))?
+            .signed
+    };
+    let issued = webhook_tokens::issue(&state.db, &id, signed).await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "id": issued.id, "token": issued.token })),
+        Json(json!({
+            "id": issued.id,
+            "token": issued.token,
+            "signing_secret": issued.signing_secret,
+        })),
     ))
 }
 
@@ -166,7 +210,14 @@ async fn list_tokens(
     Ok(Json(Value::Array(
         tokens
             .iter()
-            .map(|t| json!({ "id": t.id, "created_at": t.created_at, "revoked_at": t.revoked_at }))
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "created_at": t.created_at,
+                    "revoked_at": t.revoked_at,
+                    "signed": t.signed,
+                })
+            })
             .collect(),
     )))
 }
@@ -458,5 +509,101 @@ mod tests {
             .post(&format!("/api/v1/workflows/{wf}/runs"), json!({}))
             .await;
         assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    async fn signed_token(h: &Harness, wf: &str) -> (String, String) {
+        let (status, body) = h
+            .post(
+                &format!("/api/v1/workflows/{wf}/webhook-tokens"),
+                json!({ "signed": true }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        (
+            body["token"].as_str().unwrap().to_owned(),
+            body["signing_secret"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    fn signature_headers(secret: &str, timestamp: i64, body: &str) -> Vec<(&'static str, String)> {
+        vec![
+            ("x-sw-timestamp", timestamp.to_string()),
+            (
+                "x-sw-signature",
+                crate::signature::sign(secret, timestamp, body.as_bytes()),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn unsigned_tokens_expose_no_secret() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        let (_, body) = h
+            .post(&format!("/api/v1/workflows/{wf}/webhook-tokens"), json!({}))
+            .await;
+        assert!(body["signing_secret"].is_null());
+    }
+
+    #[tokio::test]
+    async fn signed_webhook_accepts_a_valid_signature_only() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        let (token, secret) = signed_token(&h, &wf).await;
+        let body = r#"{"x":1}"#;
+        let (status, _) = hook(&h, &token, &[], body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = hook(
+            &h,
+            &token,
+            &signature_headers("whsec_faux", super::now_secs(), body),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = hook(
+            &h,
+            &token,
+            &signature_headers(&secret, super::now_secs(), body),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn signed_webhook_rejects_a_replayed_old_request() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        let (token, secret) = signed_token(&h, &wf).await;
+        let body = "{}";
+        let old = super::now_secs() - 3600;
+        let (status, _) = hook(&h, &token, &signature_headers(&secret, old, body), body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn token_listing_flags_signed_tokens() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        signed_token(&h, &wf).await;
+        let (_, listed) = h
+            .get(&format!("/api/v1/workflows/{wf}/webhook-tokens"))
+            .await;
+        assert_eq!(listed[0]["signed"], true);
+        assert!(listed[0].get("signing_secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn issuing_with_an_invalid_body_is_a_400() {
+        let h = harness().await;
+        let wf = h.active_workflow("a").await;
+        let (status, _) = h
+            .post(
+                &format!("/api/v1/workflows/{wf}/webhook-tokens"),
+                json!({ "signed": "oui" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
