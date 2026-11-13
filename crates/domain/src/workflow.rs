@@ -132,6 +132,10 @@ impl Workflow {
         serde_yaml_ng::from_str(text)
     }
 
+    pub fn to_yaml(&self) -> Result<String, serde_yaml_ng::Error> {
+        serde_yaml_ng::to_string(self)
+    }
+
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(text)
     }
@@ -686,5 +690,20 @@ spec:
         }
         workflow.spec.trigger.config = json!({ "schedule": "*/10 * * * *" });
         assert!(workflow.validate().is_ok());
+    }
+
+    #[test]
+    fn yaml_export_roundtrips_to_the_same_workflow_and_hash() {
+        let original = parse_yaml(VALID);
+        let reparsed = parse_yaml(&original.to_yaml().unwrap());
+        assert_eq!(original, reparsed);
+        assert_eq!(original.hash(), reparsed.hash());
+    }
+
+    #[test]
+    fn json_export_roundtrips_too() {
+        let original = parse_yaml(VALID);
+        let text = serde_json::to_string(&original).unwrap();
+        assert_eq!(Workflow::from_json(&text).unwrap(), original);
     }
 }

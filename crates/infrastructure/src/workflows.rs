@@ -140,6 +140,18 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<WorkflowRecord>, 
         .await
 }
 
+pub async fn find(
+    pool: &SqlitePool,
+    project: &str,
+    name: &str,
+) -> Result<Option<WorkflowRecord>, sqlx::Error> {
+    sqlx::query_as(&format!("{SELECT} WHERE w.project = ? AND w.name = ?"))
+        .bind(project)
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn list(pool: &SqlitePool) -> Result<Vec<WorkflowRecord>, sqlx::Error> {
     sqlx::query_as(&format!("{SELECT} ORDER BY w.project, w.name"))
         .fetch_all(pool)
@@ -322,5 +334,15 @@ mod tests {
         let (pool, _dir) = pool().await;
         assert!(get(&pool, "nope").await.unwrap().is_none());
         assert!(get_version(&pool, "nope", 1).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn find_looks_a_workflow_up_by_project_and_name() {
+        let (pool, _dir) = pool().await;
+        let created = create(&pool, &definition("w", "1s")).await.unwrap();
+        let found = find(&pool, "p", "w").await.unwrap().unwrap();
+        assert_eq!(found.id, created.id);
+        assert!(find(&pool, "p", "autre").await.unwrap().is_none());
+        assert!(find(&pool, "q", "w").await.unwrap().is_none());
     }
 }
