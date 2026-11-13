@@ -48,6 +48,7 @@ const step = (over: object = {}) => ({
   error: null,
   started_at: null,
   finished_at: null,
+  wake_at: null,
   ...over,
 })
 
@@ -84,5 +85,11 @@ describe('RunDetailPage', () => {
     renderPage('failed', 'viewer')
     await screen.findByText('webhook.received')
     expect(screen.queryByRole('button', { name: 'Relancer' })).toBeNull()
+  })
+
+  it('shows when a waiting step resumes', async () => {
+    const wake = Date.UTC(2026, 10, 13, 12, 0, 0)
+    renderPage('waiting', 'admin', [step({ step_id: 'pause', status: 'waiting', wake_at: wake })])
+    expect(await screen.findByText(`reprise à ${new Date(wake).toLocaleString()}`)).toBeInTheDocument()
   })
 })

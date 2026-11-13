@@ -380,4 +380,49 @@ mod tests {
             .unwrap()
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn a_delayed_run_is_released_then_resumed_by_the_loop() {
+        let (pool, _dir) = pool().await;
+        let workflow = Workflow::from_yaml(
+            "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {name: napper, project: p}\n\
+             spec:\n  trigger: {type: manual}\n  steps:\n    - {id: nap, type: delay, with: {seconds: 1}}\n    \
+             - {id: after, type: transform, needs: [nap], with: {value: 1}}\n",
+        )
+        .unwrap();
+        let record = workflows::create(&pool, &workflow).await.unwrap();
+        workflows::activate(&pool, &record.id, 1).await.unwrap();
+        let run_id = runs::ingest(
+            &pool,
+            &NewEvent {
+                workflow_id: record.id,
+                source: "manual".into(),
+                kind: "manual.run".into(),
+                payload: json!({}),
+                correlation_id: "c".into(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap()
+        .run_id;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(run(
+            pool.clone(),
+            settings(),
+            Duration::from_millis(10),
+            async {
+                let _ = rx.await;
+            },
+        ));
+
+        wait_for_status(&pool, &run_id, "waiting").await;
+        wait_for_status(&pool, &run_id, "succeeded").await;
+
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

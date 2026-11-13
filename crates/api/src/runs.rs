@@ -64,6 +64,7 @@ fn step_json(step: &StepRun) -> Value {
         "error": step.error,
         "started_at": step.started_at,
         "finished_at": step.finished_at,
+        "wake_at": step.wake_at,
     })
 }
 

@@ -119,6 +119,7 @@ pub async fn process_run(
         if runs::cancel_requested(pool, &run.id).await? {
             runs::cancel_pending_steps(pool, &run.id).await?;
         }
+        wake_due_steps(pool, &run.id).await?;
         let rows = runs::steps(pool, &run.id).await?;
         let mut states = BTreeMap::new();
         let mut step_vars = serde_json::Map::new();
@@ -156,6 +157,17 @@ pub async fn process_run(
 
         let actions = scheduler::decide(&plan, &states, &vars);
         if actions.is_empty() {
+            if let Some(wake_at) = rows
+                .iter()
+                .filter(|row| row.status == "waiting")
+                .filter_map(|row| row.wake_at)
+                .min()
+            {
+                if !runs::park(pool, &run.id, &settings.owner, wake_at).await? {
+                    tracing::warn!(run_id = %run.id, "run non suspendu : bail perdu");
+                }
+                return Ok(());
+            }
             runs::finish(
                 pool,
                 &run.id,
@@ -179,6 +191,10 @@ pub async fn process_run(
                     let Some(step) = definitions.get(&id).cloned() else {
                         continue;
                     };
+                    if step.kind == "delay" {
+                        start_delay(pool, &run.id, &step, &vars).await?;
+                        continue;
+                    }
                     tasks.spawn(run_step(
                         pool.clone(),
                         run.id.clone(),
@@ -194,6 +210,52 @@ pub async fn process_run(
             joined.map_err(|_| ProcessError::Task)??;
         }
     }
+}
+
+async fn start_delay(
+    pool: &SqlitePool,
+    run_id: &str,
+    step: &Step,
+    vars: &Value,
+) -> Result<(), RunError> {
+    match steps::delay_seconds(&step.with, vars) {
+        Ok(seconds) => {
+            let wake_at =
+                now_ms().saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX) * 1000);
+            runs::wait_step(
+                pool,
+                run_id,
+                &step.id,
+                wake_at,
+                &json!({ "seconds": seconds }),
+            )
+            .await
+        }
+        Err(error) => runs::set_step(pool, run_id, &step.id, "failed", None, Some(&error), 0).await,
+    }
+}
+
+async fn wake_due_steps(pool: &SqlitePool, run_id: &str) -> Result<(), RunError> {
+    let now = now_ms();
+    for row in runs::steps(pool, run_id).await? {
+        if row.status == "waiting" && row.wake_at.is_some_and(|at| at <= now) {
+            let output: Option<Value> = row
+                .output
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok());
+            runs::set_step(
+                pool,
+                run_id,
+                &row.step_id,
+                "succeeded",
+                output.as_ref(),
+                None,
+                1,
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 fn summarise(outcome: RunOutcome, rows: &[runs::StepRun]) -> (&'static str, Option<String>) {
@@ -595,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn unimplemented_step_types_fail_the_run() {
         let env = env().await;
-        let run = queued(&env, "    - {id: wait, type: delay}\n", json!({})).await;
+        let run = queued(&env, "    - {id: ask, type: approval}\n", json!({})).await;
 
         process_run(&env.pool, &run, &env.settings).await.unwrap();
 
@@ -654,6 +716,109 @@ mod tests {
         assert_eq!(
             statuses(&env, &run.id).await,
             pairs(&[("a", "succeeded"), ("b", "cancelled")])
+        );
+    }
+
+    const DELAYED: &str = "    - {id: first, type: transform, with: {value: 1}}\n    \
+                           - {id: pause, type: delay, needs: [first], with: {seconds: 60}}\n    \
+                           - {id: last, type: transform, needs: [pause], with: {value: 2}}\n    \
+                           - {id: side, type: transform, with: {value: 3}}\n";
+
+    async fn wake_now(env: &Env, run_id: &str) {
+        for table in ["runs", "step_runs"] {
+            let column = if table == "runs" { "id" } else { "run_id" };
+            sqlx::query(&format!(
+                "UPDATE {table} SET wake_at = 0 WHERE {column} = ? AND wake_at IS NOT NULL"
+            ))
+            .bind(run_id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delay_parks_the_run_after_the_other_branches_finish() {
+        let env = env().await;
+        let run = queued(&env, DELAYED, json!({})).await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let parked = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(
+            (parked.status.as_str(), parked.lease_owner),
+            ("waiting", None)
+        );
+        assert!(parked.wake_at.is_some());
+        assert_eq!(
+            statuses(&env, &run.id).await,
+            pairs(&[
+                ("first", "succeeded"),
+                ("pause", "waiting"),
+                ("last", "pending"),
+                ("side", "succeeded"),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_woken_run_completes_the_delay_and_continues() {
+        let env = env().await;
+        let run = queued(&env, DELAYED, json!({})).await;
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+        wake_now(&env, &run.id).await;
+        let woken = runs::claim(&env.pool, "w1", now_ms(), 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+
+        process_run(&env.pool, &woken, &env.settings).await.unwrap();
+
+        let done = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        assert_eq!(done.status, "succeeded");
+        let rows = runs::steps(&env.pool, &run.id).await.unwrap();
+        let pause = rows.iter().find(|row| row.step_id == "pause").unwrap();
+        assert_eq!(pause.status, "succeeded");
+        assert!(pause.output.as_deref().unwrap().contains("60"));
+    }
+
+    #[tokio::test]
+    async fn an_invalid_delay_fails_the_step_and_the_run() {
+        let env = env().await;
+        let run = queued(
+            &env,
+            "    - {id: pause, type: delay, with: {seconds: 0}}\n",
+            json!({}),
+        )
+        .await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        assert_eq!(
+            runs::get(&env.pool, &run.id).await.unwrap().unwrap().status,
+            "failed"
+        );
+        assert_eq!(statuses(&env, &run.id).await, pairs(&[("pause", "failed")]));
+    }
+
+    #[tokio::test]
+    async fn a_delay_duration_can_come_from_the_event() {
+        let env = env().await;
+        let run = queued(
+            &env,
+            "    - {id: pause, type: delay, with: {seconds: '${{ event.payload.wait }}'}}\n",
+            json!({ "wait": 120 }),
+        )
+        .await;
+
+        process_run(&env.pool, &run, &env.settings).await.unwrap();
+
+        let parked = runs::get(&env.pool, &run.id).await.unwrap().unwrap();
+        let wake_at = parked.wake_at.unwrap();
+        let expected = now_ms() + 120_000;
+        assert!(
+            (expected - wake_at).abs() < 5_000,
+            "{wake_at} vs {expected}"
         );
     }
 }

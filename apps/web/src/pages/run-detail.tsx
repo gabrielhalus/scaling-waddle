@@ -82,6 +82,11 @@ export function RunDetailPage({ id, onOpenRun }: { id: string; onOpenRun: (id: s
                   <StatusBadge status={step.status} />
                 </span>
               </div>
+              {step.wake_at !== null && step.status === 'waiting' && (
+                <p className="text-xs text-neutral-600">
+                  reprise à {new Date(step.wake_at).toLocaleString()}
+                </p>
+              )}
               {step.error && <p className="text-xs text-red-700">{step.error}</p>}
               {step.output !== null && (
                 <pre className="overflow-x-auto rounded bg-neutral-50 p-2 text-xs">

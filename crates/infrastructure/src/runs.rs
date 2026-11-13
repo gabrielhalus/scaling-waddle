@@ -55,6 +55,7 @@ pub struct Run {
     pub error: Option<String>,
     pub lease_owner: Option<String>,
     pub lease_expires_at: Option<i64>,
+    pub wake_at: Option<i64>,
     pub created_at: String,
     pub finished_at: Option<String>,
 }
@@ -79,7 +80,7 @@ pub struct EventRecord {
     pub correlation_id: String,
 }
 
-const RUN_COLUMNS: &str = "id, workflow_id, version, event_id, status, error, lease_owner, lease_expires_at, created_at, finished_at";
+const RUN_COLUMNS: &str = "id, workflow_id, version, event_id, status, error, lease_owner, lease_expires_at, wake_at, created_at, finished_at";
 
 pub async fn ingest(pool: &SqlitePool, event: &NewEvent) -> Result<Ingested, RunError> {
     match ingest_once(pool, event).await {

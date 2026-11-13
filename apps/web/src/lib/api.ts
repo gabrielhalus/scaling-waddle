@@ -33,6 +33,7 @@ export type StepRun = {
   error: string | null
   started_at: string | null
   finished_at: string | null
+  wake_at: number | null
 }
 
 export type RunDetail = {
