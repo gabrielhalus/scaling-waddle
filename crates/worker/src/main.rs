@@ -6,7 +6,7 @@ use sw_infrastructure::{config::Config, db, shutdown, telemetry};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     telemetry::init();
-    let config = Config::from_env()?;
+    let config = Config::worker_from_env()?;
     if let Some(dir) = config.database_path.parent() {
         std::fs::create_dir_all(dir)?;
     }

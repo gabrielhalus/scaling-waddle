@@ -36,11 +36,25 @@ impl Config {
         Self::from_lookup(|key| std::env::var(key).ok())
     }
 
+    // Le worker ne signe aucun jeton : le secret JWT reste optionnel pour lui.
+    pub fn worker_from_env() -> Result<Self, ConfigError> {
+        Self::build(|key| std::env::var(key).ok(), false)
+    }
+
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        Self::build(lookup, true)
+    }
+
+    fn build(
+        lookup: impl Fn(&str) -> Option<String>,
+        require_jwt_secret: bool,
+    ) -> Result<Self, ConfigError> {
         let bind = lookup("SW_BIND").unwrap_or_else(|| "127.0.0.1:8080".to_owned());
-        let jwt_secret = lookup("SW_JWT_SECRET")
-            .filter(|secret| secret.len() >= 32)
-            .ok_or(ConfigError::JwtSecret)?;
+        let jwt_secret = match lookup("SW_JWT_SECRET").filter(|secret| secret.len() >= 32) {
+            Some(secret) => secret,
+            None if require_jwt_secret => return Err(ConfigError::JwtSecret),
+            None => String::new(),
+        };
         let max_concurrent_runs = match lookup("SW_MAX_CONCURRENT_RUNS") {
             None => DEFAULT_MAX_CONCURRENT_RUNS,
             Some(text) => text
@@ -216,5 +230,17 @@ mod tests {
         })
         .unwrap();
         assert!(!config.keyring.is_enabled());
+    }
+
+    #[test]
+    fn the_worker_does_not_need_a_jwt_secret() {
+        let lookup = |_: &str| None;
+        assert!(matches!(
+            Config::from_lookup(lookup),
+            Err(ConfigError::JwtSecret)
+        ));
+        let config = Config::build(lookup, false).unwrap();
+        assert!(config.jwt_secret.is_empty());
+        assert_eq!(config.max_concurrent_runs, 4);
     }
 }
