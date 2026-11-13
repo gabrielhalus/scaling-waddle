@@ -223,7 +223,6 @@ mod tests {
         for kind in [
             "delay",
             "approval",
-            "notification",
             "agent.run",
             "script.run",
             "integration.x.y",

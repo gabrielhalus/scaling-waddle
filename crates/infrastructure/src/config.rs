@@ -1,10 +1,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use crate::crypto::{CryptoError, Keyring};
+
 const DEFAULT_MAX_CONCURRENT_RUNS: usize = 4;
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub database_path: PathBuf,
     pub bind: SocketAddr,
@@ -12,6 +14,7 @@ pub struct Config {
     pub allowed_internal_networks: String,
     pub max_concurrent_runs: usize,
     pub retention_days: u32,
+    pub keyring: Keyring,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -22,6 +25,8 @@ pub enum ConfigError {
     MaxConcurrentRuns,
     #[error("SW_RETENTION_DAYS doit être un entier positif (0 pour tout conserver)")]
     RetentionDays,
+    #[error("clés de secrets invalides: {0}")]
+    SecretKeys(#[from] CryptoError),
     #[error("SW_JWT_SECRET absent ou de moins de 32 caractères")]
     JwtSecret,
 }
@@ -52,6 +57,10 @@ impl Config {
                 .parse::<u32>()
                 .map_err(|_| ConfigError::RetentionDays)?,
         };
+        let keyring = Keyring::parse(
+            &lookup("SW_SECRET_KEYS").unwrap_or_default(),
+            lookup("SW_SECRET_ACTIVE_KEY").as_deref(),
+        )?;
         Ok(Self {
             database_path: lookup("SW_DATABASE_PATH")
                 .map_or_else(|| PathBuf::from("data/scaling-waddle.db"), PathBuf::from),
@@ -60,6 +69,7 @@ impl Config {
             allowed_internal_networks: lookup("SW_ALLOWED_INTERNAL_NETWORKS").unwrap_or_default(),
             max_concurrent_runs,
             retention_days,
+            keyring,
         })
     }
 }
@@ -173,5 +183,25 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn secret_keys_are_optional_and_validated() {
+        let with = |keys: Option<String>, active: Option<&'static str>| {
+            Config::from_lookup(move |key| match key {
+                "SW_JWT_SECRET" => Some(SECRET.to_owned()),
+                "SW_SECRET_KEYS" => keys.clone(),
+                "SW_SECRET_ACTIVE_KEY" => active.map(str::to_owned),
+                _ => None,
+            })
+        };
+        assert!(!with(None, None).unwrap().keyring.is_enabled());
+        let key = hex::encode([7u8; 32]);
+        let config = with(Some(format!("k1={key}")), Some("k1")).unwrap();
+        assert_eq!(config.keyring.active_id(), Some("k1"));
+        assert!(matches!(
+            with(Some(format!("k1={key}")), None),
+            Err(ConfigError::SecretKeys(_))
+        ));
     }
 }
