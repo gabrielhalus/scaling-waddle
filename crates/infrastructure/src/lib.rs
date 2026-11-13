@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod config;
 pub mod cron;
+pub mod crypto;
 pub mod db;
 pub mod integrations;
 pub mod jwt;
