@@ -13,6 +13,7 @@ pub mod state;
 #[cfg(test)]
 mod testing;
 pub mod triggers;
+pub mod users;
 pub mod web;
 pub mod workflows;
 
@@ -31,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .merge(integrations::routes())
         .merge(approvals::routes())
         .merge(audit::routes())
+        .merge(users::routes())
         .merge(secrets::routes())
         .with_state(state)
 }

@@ -104,7 +104,12 @@ fn now() -> i64 {
 }
 
 fn validate(credentials: &Credentials) -> Result<String, ApiError> {
-    let email = credentials.email.trim().to_lowercase();
+    check_new_account(&credentials.email, &credentials.password)
+}
+
+// Normalise l'e-mail et contrôle le mot de passe d'un nouveau compte.
+pub(crate) fn check_new_account(raw_email: &str, password: &str) -> Result<String, ApiError> {
+    let email = raw_email.trim().to_lowercase();
     let valid_email = email.len() <= 254
         && email.split_once('@').is_some_and(|(local, domain)| {
             !local.is_empty()
@@ -115,13 +120,18 @@ fn validate(credentials: &Credentials) -> Result<String, ApiError> {
     if !valid_email {
         return Err(ApiError::BadRequest("adresse e-mail invalide".into()));
     }
-    let len = credentials.password.chars().count();
+    check_password(password)?;
+    Ok(email)
+}
+
+pub(crate) fn check_password(password: &str) -> Result<(), ApiError> {
+    let len = password.chars().count();
     if !(MIN_PASSWORD_LEN..=MAX_PASSWORD_LEN).contains(&len) {
         return Err(ApiError::BadRequest(
             "le mot de passe doit faire entre 12 et 256 caractères".into(),
         ));
     }
-    Ok(email)
+    Ok(())
 }
 
 async fn issue(state: &AppState, user: &users::User) -> Result<Tokens, ApiError> {
@@ -261,7 +271,7 @@ async fn me(State(state): State<AppState>, auth: AuthUser) -> Result<Json<Me>, A
     }))
 }
 
-async fn hash_blocking(password: String) -> Result<String, ApiError> {
+pub(crate) async fn hash_blocking(password: String) -> Result<String, ApiError> {
     tokio::task::spawn_blocking(move || password::hash(&password))
         .await
         .map_err(|_| ApiError::Internal)?
