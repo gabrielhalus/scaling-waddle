@@ -65,6 +65,16 @@ impl AuthUser {
     }
 }
 
+impl AuthUser {
+    pub fn require_admin(&self) -> Result<(), ApiError> {
+        if self.role == "admin" {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden)
+        }
+    }
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 

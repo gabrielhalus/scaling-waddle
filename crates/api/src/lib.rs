@@ -5,6 +5,7 @@ pub mod health;
 pub mod integrations;
 pub mod ratelimit;
 pub mod runs;
+pub mod secrets;
 pub mod signature;
 pub mod state;
 #[cfg(test)]
@@ -25,5 +26,6 @@ pub fn router(state: AppState) -> Router {
         .merge(runs::routes())
         .merge(integrations::routes())
         .merge(approvals::routes())
+        .merge(secrets::routes())
         .with_state(state)
 }

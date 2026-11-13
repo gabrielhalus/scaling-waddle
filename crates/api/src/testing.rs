@@ -4,6 +4,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use sw_infrastructure::crypto::Keyring;
+
 use crate::{AppState, router};
 
 pub const PASSWORD: &str = "correct horse battery";
@@ -20,7 +22,13 @@ pub async fn harness() -> Harness {
     let db = sw_infrastructure::db::open(&dir.path().join("sw.db"))
         .await
         .unwrap();
-    let state = AppState::new(db, "0123456789abcdef0123456789abcdef");
+    let keys = format!(
+        "k1={},k2={}",
+        hex::encode([1u8; 32]),
+        hex::encode([2u8; 32])
+    );
+    let state = AppState::new(db, "0123456789abcdef0123456789abcdef")
+        .with_keyring(Keyring::parse(&keys, Some("k1")).unwrap());
     let app = router(state.clone());
     let (_, tokens) = send(
         &app,

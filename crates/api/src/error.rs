@@ -14,6 +14,7 @@ pub enum ApiError {
     Forbidden,
     NotFound,
     Conflict(&'static str),
+    Unavailable(&'static str),
     TooManyRequests {
         retry_after_secs: u64,
     },
@@ -45,6 +46,9 @@ impl IntoResponse for ApiError {
                     Json(json!({ "error": "trop de tentatives, réessayez plus tard" })),
                 )
                     .into_response();
+            }
+            Self::Unavailable(message) => {
+                (StatusCode::SERVICE_UNAVAILABLE, json!({ "error": message }))
             }
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
