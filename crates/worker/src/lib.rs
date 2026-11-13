@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 use sw_infrastructure::runs;
+use tokio::task::JoinSet;
 
 pub use processor::Settings;
 
@@ -15,9 +16,10 @@ pub async fn run(
     shutdown: impl Future<Output = ()>,
 ) {
     tokio::pin!(shutdown);
+    let capacity = settings.max_concurrent_runs.max(1);
+    let mut tasks = JoinSet::new();
     loop {
-        // Vide la file avant d'attendre ; un arrêt demandé est pris en compte entre deux runs.
-        loop {
+        while tasks.len() < capacity {
             let claimed = runs::claim(
                 &pool,
                 &settings.owner,
@@ -27,13 +29,12 @@ pub async fn run(
             .await;
             match claimed {
                 Ok(Some(run)) => {
-                    if let Err(err) = processor::process_run(&pool, &run, &settings).await {
-                        tracing::error!(run_id = %run.id, %err, "traitement du run en échec");
-                    }
-                    if futures_ready(&mut shutdown) {
-                        tracing::info!("worker arrêté");
-                        return;
-                    }
+                    let (pool, settings) = (pool.clone(), settings.clone());
+                    tasks.spawn(async move {
+                        if let Err(err) = processor::process_run(&pool, &run, &settings).await {
+                            tracing::error!(run_id = %run.id, %err, "traitement du run en échec");
+                        }
+                    });
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -44,18 +45,18 @@ pub async fn run(
         }
         tokio::select! {
             () = &mut shutdown => {
+                while tasks.join_next().await.is_some() {}
                 tracing::info!("worker arrêté");
                 return;
+            }
+            Some(joined) = tasks.join_next(), if !tasks.is_empty() => {
+                if let Err(err) = joined {
+                    tracing::error!(%err, "tâche de run interrompue");
+                }
             }
             () = tokio::time::sleep(poll) => {}
         }
     }
-}
-
-fn futures_ready(shutdown: &mut std::pin::Pin<&mut impl Future<Output = ()>>) -> bool {
-    let waker = std::task::Waker::noop();
-    let mut context = std::task::Context::from_waker(waker);
-    shutdown.as_mut().poll(&mut context).is_ready()
 }
 
 #[cfg(test)]
@@ -74,6 +75,7 @@ mod tests {
             lease_ms: 30_000,
             backoff_unit: Duration::from_millis(1),
             policy: Policy::default(),
+            max_concurrent_runs: 1,
         }
     }
 
@@ -208,5 +210,96 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    async fn slow_workflow(pool: &SqlitePool, name: &str, server: &wiremock::MockServer) -> String {
+        sw_infrastructure::integrations::create(
+            pool,
+            "p",
+            &format!("hook-{name}"),
+            &server.uri(),
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        let workflow = Workflow::from_yaml(&format!(
+            "apiVersion: scaling-waddle.dev/v1\nkind: Workflow\nmetadata: {{name: {name}, project: p}}\n\
+             spec:\n  trigger: {{type: manual}}\n  steps:\n    - {{id: a, type: http.request, with: {{integration: hook-{name}, path: /slow}}}}\n"
+        ))
+        .unwrap();
+        let record = workflows::create(pool, &workflow).await.unwrap();
+        workflows::activate(pool, &record.id, 1).await.unwrap();
+        runs::ingest(
+            pool,
+            &NewEvent {
+                workflow_id: record.id,
+                source: "manual".into(),
+                kind: "manual.run".into(),
+                payload: json!({}),
+                correlation_id: "c".into(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap()
+        .run_id
+    }
+
+    async fn peak_running(pool: &SqlitePool, window: Duration) -> i64 {
+        let mut peak = 0;
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            let running: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM runs WHERE status = 'running'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            peak = peak.max(running);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        peak
+    }
+
+    async fn peak_with_capacity(capacity: usize) -> i64 {
+        let (pool, _dir) = pool().await;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::path("/slow"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        for name in ["one", "two", "three"] {
+            slow_workflow(&pool, name, &server).await;
+        }
+        let mut config = settings();
+        config.policy = sw_engine::netguard::Policy::parse_allowed("127.0.0.0/8").unwrap();
+        config.max_concurrent_runs = capacity;
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(run(
+            pool.clone(),
+            config,
+            Duration::from_millis(10),
+            async {
+                let _ = rx.await;
+            },
+        ));
+        let peak = peak_running(&pool, Duration::from_millis(250)).await;
+        tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        peak
+    }
+
+    #[tokio::test]
+    async fn runs_are_processed_in_parallel_up_to_the_configured_capacity() {
+        assert_eq!(peak_with_capacity(2).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_capacity_of_one_processes_runs_one_at_a_time() {
+        assert_eq!(peak_with_capacity(1).await, 1);
     }
 }

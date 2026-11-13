@@ -21,6 +21,7 @@ pub struct Settings {
     pub lease_ms: i64,
     pub backoff_unit: Duration,
     pub policy: Policy,
+    pub max_concurrent_runs: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -300,6 +301,7 @@ mod tests {
             lease_ms: 30_000,
             backoff_unit: Duration::from_millis(1),
             policy: Policy::parse_allowed("127.0.0.0/8").unwrap(),
+            max_concurrent_runs: 1,
         };
         Env {
             pool,
