@@ -2,6 +2,8 @@ pub mod agent;
 pub mod http;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -29,11 +31,12 @@ pub struct Integration {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Services {
     policy: Policy,
     integrations: BTreeMap<String, Integration>,
     unavailable: BTreeMap<String, String>,
+    agent: Option<Arc<dyn agent::AgentRunner>>,
     client: Option<reqwest::Client>,
 }
 
@@ -46,8 +49,14 @@ impl Services {
             policy,
             integrations,
             unavailable: BTreeMap::new(),
+            agent: None,
             client,
         }
+    }
+
+    pub fn with_agent(mut self, runner: Arc<dyn agent::AgentRunner>) -> Self {
+        self.agent = Some(runner);
+        self
     }
 
     pub fn mark_unavailable(mut self, name: impl Into<String>, reason: impl Into<String>) -> Self {
@@ -95,6 +104,7 @@ pub async fn execute(kind: &str, with: &Value, vars: &Value, services: &Services
         "transform" => transform(with, vars),
         "http.request" => http::execute(with, vars, services).await,
         "notification" => notification(with, vars, services).await,
+        "agent.run" => agent_run(with, vars, services).await,
         other => StepOutcome::fatal(format!("type d'étape non implémenté: {other}")),
     }
 }
@@ -144,6 +154,72 @@ pub fn approval_request(with: &Value, vars: &Value) -> Result<ApprovalRequest, S
         message,
         timeout_seconds,
     })
+}
+
+const MAX_PROMPT_CHARS: usize = 20_000;
+const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 120;
+const MAX_AGENT_TIMEOUT_SECS: u64 = 600;
+
+async fn agent_run(with: &Value, vars: &Value, services: &Services) -> StepOutcome {
+    let Some(runner) = &services.agent else {
+        return StepOutcome::fatal("agent runner désactivé (SW_AGENT_COMMAND)");
+    };
+    let Some(template) = with.get("prompt").and_then(Value::as_str) else {
+        return StepOutcome::fatal("`with.prompt` est requis et doit être une chaîne");
+    };
+    let prompt = match expr::render_str(template, vars) {
+        Ok(Value::String(text)) => text,
+        Ok(other) => other.to_string(),
+        Err(err) => return StepOutcome::fatal(err.to_string()),
+    };
+    if prompt.trim().is_empty() || prompt.chars().count() > MAX_PROMPT_CHARS {
+        return StepOutcome::fatal(format!(
+            "le prompt doit contenir de 1 à {MAX_PROMPT_CHARS} caractères"
+        ));
+    }
+    let model = match with.get("model") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name))
+            if (1..=64).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) =>
+        {
+            Some(name.clone())
+        }
+        Some(_) => return StepOutcome::fatal("`with.model` invalide"),
+    };
+    let timeout_secs = match with.get("timeout_seconds") {
+        None | Some(Value::Null) => DEFAULT_AGENT_TIMEOUT_SECS,
+        Some(value) => match value
+            .as_u64()
+            .filter(|s| (1..=MAX_AGENT_TIMEOUT_SECS).contains(s))
+        {
+            Some(secs) => secs,
+            None => {
+                return StepOutcome::fatal(format!(
+                    "`with.timeout_seconds` doit être compris entre 1 et {MAX_AGENT_TIMEOUT_SECS}"
+                ));
+            }
+        },
+    };
+    let request = agent::AgentRequest {
+        prompt,
+        model,
+        timeout: Duration::from_secs(timeout_secs),
+    };
+    match runner.run(&request).await {
+        Ok(output) => StepOutcome::Succeeded(json!({
+            "result": output.result,
+            "cost_usd": output.cost_usd,
+            "turns": output.turns,
+        })),
+        Err(agent::AgentError::Timeout) => StepOutcome::Failed {
+            error: agent::AgentError::Timeout.to_string(),
+            retryable: true,
+        },
+        Err(err) => StepOutcome::fatal(err.to_string()),
+    }
 }
 
 async fn notification(with: &Value, vars: &Value, services: &Services) -> StepOutcome {
@@ -258,7 +334,6 @@ mod tests {
         for kind in [
             "delay",
             "approval",
-            "agent.run",
             "script.run",
             "integration.x.y",
             "bogus",
@@ -460,5 +535,155 @@ mod tests {
             resolve_secret_refs("${secret:a}", &secrets).unwrap(),
             "${secret:b}"
         );
+    }
+
+    mod agent_step {
+        use std::sync::Mutex;
+
+        use super::*;
+        use crate::steps::agent::{
+            AgentError, AgentFuture, AgentOutput, AgentRequest, AgentRunner,
+        };
+
+        struct Fake {
+            seen: Mutex<Vec<AgentRequest>>,
+            answer: Result<AgentOutput, AgentError>,
+        }
+
+        impl AgentRunner for Fake {
+            fn run<'a>(&'a self, request: &'a AgentRequest) -> AgentFuture<'a> {
+                self.seen.lock().unwrap().push(request.clone());
+                let answer = self.answer.clone();
+                Box::pin(async move { answer })
+            }
+        }
+
+        fn fake(answer: Result<AgentOutput, AgentError>) -> (Arc<Fake>, Services) {
+            let runner = Arc::new(Fake {
+                seen: Mutex::new(Vec::new()),
+                answer,
+            });
+            let services = Services::default().with_agent(runner.clone());
+            (runner, services)
+        }
+
+        fn ok() -> Result<AgentOutput, AgentError> {
+            Ok(AgentOutput {
+                result: "résumé".into(),
+                cost_usd: 0.02,
+                turns: 1,
+            })
+        }
+
+        #[tokio::test]
+        async fn the_prompt_is_rendered_from_the_event_and_the_output_exposed() {
+            let (runner, services) = fake(ok());
+            let vars = json!({ "event": { "payload": { "service": "api" } } });
+            let outcome = execute(
+                "agent.run",
+                &json!({ "prompt": "Résume l'alerte sur ${{ event.payload.service }}", "model": "sonnet", "timeout_seconds": 30 }),
+                &vars,
+                &services,
+            )
+            .await;
+            assert_eq!(
+                outcome,
+                StepOutcome::Succeeded(json!({ "result": "résumé", "cost_usd": 0.02, "turns": 1 }))
+            );
+            let seen = runner.seen.lock().unwrap();
+            assert_eq!(seen[0].prompt, "Résume l'alerte sur api");
+            assert_eq!(seen[0].model.as_deref(), Some("sonnet"));
+            assert_eq!(seen[0].timeout, Duration::from_secs(30));
+        }
+
+        #[tokio::test]
+        async fn defaults_apply_when_options_are_absent() {
+            let (runner, services) = fake(ok());
+            execute(
+                "agent.run",
+                &json!({ "prompt": "salut" }),
+                &json!({}),
+                &services,
+            )
+            .await;
+            let seen = runner.seen.lock().unwrap();
+            assert_eq!(
+                (seen[0].model.clone(), seen[0].timeout),
+                (None, Duration::from_secs(120))
+            );
+        }
+
+        #[tokio::test]
+        async fn invalid_parameters_never_reach_the_runner() {
+            let (runner, services) = fake(ok());
+            for with in [
+                json!({}),
+                json!({ "prompt": 3 }),
+                json!({ "prompt": "   " }),
+                json!({ "prompt": "x".repeat(20_001) }),
+                json!({ "prompt": "a", "model": "bad model; rm" }),
+                json!({ "prompt": "a", "model": 5 }),
+                json!({ "prompt": "a", "timeout_seconds": 0 }),
+                json!({ "prompt": "a", "timeout_seconds": 601 }),
+            ] {
+                let outcome = execute("agent.run", &with, &json!({}), &services).await;
+                assert!(
+                    matches!(
+                        outcome,
+                        StepOutcome::Failed {
+                            retryable: false,
+                            ..
+                        }
+                    ),
+                    "{with}"
+                );
+            }
+            assert!(runner.seen.lock().unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_disabled_runner_fails_clearly() {
+            let outcome = execute(
+                "agent.run",
+                &json!({ "prompt": "a" }),
+                &json!({}),
+                &Services::default(),
+            )
+            .await;
+            let StepOutcome::Failed { error, retryable } = outcome else {
+                panic!("échec attendu")
+            };
+            assert!(error.contains("SW_AGENT_COMMAND") && !retryable);
+        }
+
+        #[tokio::test]
+        async fn timeouts_are_retryable_but_other_failures_are_not() {
+            let (_, services) = fake(Err(AgentError::Timeout));
+            let outcome = execute(
+                "agent.run",
+                &json!({ "prompt": "a" }),
+                &json!({}),
+                &services,
+            )
+            .await;
+            assert!(matches!(
+                outcome,
+                StepOutcome::Failed {
+                    retryable: true,
+                    ..
+                }
+            ));
+            let (_, services) = fake(Err(AgentError::Failed("quota".into())));
+            let outcome = execute(
+                "agent.run",
+                &json!({ "prompt": "a" }),
+                &json!({}),
+                &services,
+            )
+            .await;
+            assert!(
+                matches!(outcome, StepOutcome::Failed { retryable: false, ref error } if error.contains("quota"))
+            );
+        }
     }
 }
