@@ -594,11 +594,7 @@ mod tests {
                 ))
                 .await;
             assert_eq!(status, StatusCode::OK);
-            assert!(
-                v1["spec"]["steps"][0].get("with").is_none()
-                    || v1["spec"]["steps"][0]["with"].is_null()
-                    || v1["spec"]["steps"][0]["with"] != json!({ "for": "2s" })
-            );
+            assert_ne!(v1["spec"]["steps"][0]["with"], json!({ "for": "2s" }));
             let (_, v2) = h
                 .get(&format!(
                     "/api/v1/workflows/{id}/export?format=json&version=2"
@@ -696,11 +692,7 @@ mod tests {
                 "POST",
                 "/api/v1/workflows/import",
                 &bearer(&h.admin),
-                Some((
-                    "application/yaml",
-                    YAML.replace("needs", "x")
-                        .replace("steps:", "steps: []\n  old:"),
-                )),
+                Some(("application/yaml", YAML.replace("manual", "telepathy"))),
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
