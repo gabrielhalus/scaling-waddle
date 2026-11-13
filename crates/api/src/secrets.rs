@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sw_infrastructure::crypto::CryptoError;
 use sw_infrastructure::secrets::{self, SecretError};
+use sw_infrastructure::webhook_tokens;
 
 use crate::AppState;
 use crate::auth::AuthUser;
@@ -95,8 +96,9 @@ async fn remove(
 
 async fn rotate(State(state): State<AppState>, auth: AuthUser) -> Result<Json<Value>, ApiError> {
     auth.require_admin()?;
-    let rotated = secrets::rotate(&state.db, &state.keyring).await?;
-    Ok(Json(json!({ "rotated": rotated })))
+    let secrets = secrets::rotate(&state.db, &state.keyring).await?;
+    let signing = webhook_tokens::rotate(&state.db, &state.keyring).await?;
+    Ok(Json(json!({ "rotated": secrets + signing })))
 }
 
 #[cfg(test)]

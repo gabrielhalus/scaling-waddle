@@ -35,6 +35,13 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
+impl From<webhook_tokens::WebhookError> for ApiError {
+    fn from(err: webhook_tokens::WebhookError) -> Self {
+        tracing::error!(%err, "erreur jetons de webhook");
+        Self::Internal
+    }
+}
+
 impl From<RunError> for ApiError {
     fn from(err: RunError) -> Self {
         match err {
@@ -128,7 +135,7 @@ async fn webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let resolved = webhook_tokens::resolve(&state.db, &token)
+    let resolved = webhook_tokens::resolve(&state.db, &state.keyring, &token)
         .await?
         .ok_or(ApiError::NotFound)?;
     if let Some(secret) = &resolved.signing_secret {
@@ -189,7 +196,7 @@ async fn issue_token(
             .map_err(|_| ApiError::BadRequest("corps JSON invalide".into()))?
             .signed
     };
-    let issued = webhook_tokens::issue(&state.db, &id, signed).await?;
+    let issued = webhook_tokens::issue(&state.db, &state.keyring, &id, signed).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
