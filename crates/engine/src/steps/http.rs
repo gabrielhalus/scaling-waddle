@@ -177,6 +177,12 @@ pub async fn execute(with: &Value, vars: &Value, services: &Services) -> StepOut
         Ok(request) => request,
         Err(err) => return StepOutcome::fatal(err),
     };
+    if let Some(reason) = services.unavailable_reason(&request.integration) {
+        return StepOutcome::fatal(format!(
+            "intégration {} indisponible: {reason}",
+            request.integration
+        ));
+    }
     let Some(integration) = services.integrations.get(&request.integration) else {
         return StepOutcome::fatal(format!("intégration inconnue: {}", request.integration));
     };
@@ -595,5 +601,17 @@ mod tests {
 
         assert!(out["headers"].get("set-cookie").is_none());
         assert_eq!(out["headers"]["x-ok"], "1");
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_integration_fails_without_any_request() {
+        let server = MockServer::start().await;
+        let services =
+            services(&server, "127.0.0.1", &[]).mark_unavailable("hook", "secret inconnu: x");
+        let outcome = run(&services, json!({ "integration": "hook", "path": "/go" })).await;
+        let (error, retryable) = failure(&outcome);
+        assert!(error.contains("indisponible") && error.contains("secret inconnu: x"));
+        assert!(!retryable);
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

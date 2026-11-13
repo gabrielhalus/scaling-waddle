@@ -32,6 +32,7 @@ pub struct Integration {
 pub struct Services {
     policy: Policy,
     integrations: BTreeMap<String, Integration>,
+    unavailable: BTreeMap<String, String>,
     client: Option<reqwest::Client>,
 }
 
@@ -43,8 +44,18 @@ impl Services {
         Self {
             policy,
             integrations,
+            unavailable: BTreeMap::new(),
             client,
         }
+    }
+
+    pub fn mark_unavailable(mut self, name: impl Into<String>, reason: impl Into<String>) -> Self {
+        self.unavailable.insert(name.into(), reason.into());
+        self
+    }
+
+    pub(crate) fn unavailable_reason(&self, name: &str) -> Option<&str> {
+        self.unavailable.get(name).map(String::as_str)
     }
 }
 
@@ -52,6 +63,29 @@ impl Default for Services {
     fn default() -> Self {
         Self::new(Policy::default(), BTreeMap::new())
     }
+}
+
+// Remplace `${secret:NOM}` ; une référence inconnue est une erreur, jamais un texte laissé en clair.
+pub fn resolve_secret_refs(
+    text: &str,
+    secrets: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    const OPEN: &str = "${secret:";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + OPEN.len()..];
+        let end = after.find('}').ok_or("référence de secret non fermée")?;
+        let name = &after[..end];
+        let value = secrets
+            .get(name)
+            .ok_or_else(|| format!("secret inconnu: {name}"))?;
+        out.push_str(value);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 pub async fn execute(kind: &str, with: &Value, vars: &Value, services: &Services) -> StepOutcome {
@@ -389,5 +423,41 @@ mod tests {
                 "{outcome:?}"
             );
         }
+    }
+
+    #[test]
+    fn secret_refs_are_replaced_in_place() {
+        let secrets = BTreeMap::from([("gh".to_owned(), "tok".to_owned())]);
+        assert_eq!(
+            resolve_secret_refs("Bearer ${secret:gh}", &secrets).unwrap(),
+            "Bearer tok"
+        );
+        assert_eq!(
+            resolve_secret_refs("sans référence", &secrets).unwrap(),
+            "sans référence"
+        );
+        assert_eq!(
+            resolve_secret_refs("${secret:gh}-${secret:gh}", &secrets).unwrap(),
+            "tok-tok"
+        );
+    }
+
+    #[test]
+    fn unknown_or_unterminated_secret_refs_are_errors() {
+        let secrets = BTreeMap::new();
+        assert_eq!(
+            resolve_secret_refs("${secret:nope}", &secrets),
+            Err("secret inconnu: nope".into())
+        );
+        assert!(resolve_secret_refs("${secret:oups", &secrets).is_err());
+    }
+
+    #[test]
+    fn secret_values_are_not_reinterpreted() {
+        let secrets = BTreeMap::from([("a".to_owned(), "${secret:b}".to_owned())]);
+        assert_eq!(
+            resolve_secret_refs("${secret:a}", &secrets).unwrap(),
+            "${secret:b}"
+        );
     }
 }
