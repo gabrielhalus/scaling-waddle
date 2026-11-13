@@ -166,6 +166,9 @@ async fn ingest_once(pool: &SqlitePool, event: &NewEvent) -> Result<Ingested, Ru
     })
 }
 
+const WORKFLOW_LIMIT: &str = "(SELECT json_extract(v.definition, '$.spec.concurrency') \
+    FROM workflow_versions v WHERE v.workflow_id = r.workflow_id AND v.version = r.version)";
+
 pub async fn claim(
     pool: &SqlitePool,
     owner: &str,
@@ -174,9 +177,12 @@ pub async fn claim(
 ) -> Result<Option<Run>, sqlx::Error> {
     sqlx::query_as(&format!(
         "UPDATE runs SET status = 'running', lease_owner = ?1, lease_expires_at = ?2 + ?3 \
-         WHERE id = (SELECT id FROM runs \
-             WHERE status = 'queued' OR (status = 'running' AND lease_expires_at < ?2) \
-             ORDER BY created_at, rowid LIMIT 1) \
+         WHERE id = (SELECT r.id FROM runs r \
+             WHERE (r.status = 'queued' OR (r.status = 'running' AND r.lease_expires_at < ?2)) \
+             AND ({WORKFLOW_LIMIT} IS NULL OR \
+                 (SELECT count(*) FROM runs o WHERE o.workflow_id = r.workflow_id \
+                     AND o.status = 'running' AND o.lease_expires_at >= ?2) < {WORKFLOW_LIMIT}) \
+             ORDER BY r.created_at, r.rowid LIMIT 1) \
          RETURNING {RUN_COLUMNS}"
     ))
     .bind(owner)
@@ -816,5 +822,63 @@ mod tests {
         ));
         request_cancel(&pool, &run).await.unwrap();
         assert!(retry(&pool, &run).await.is_ok());
+    }
+
+    async fn limited_workflow(pool: &sqlx::SqlitePool, name: &str, limit: u32) -> String {
+        let mut workflow = definition();
+        workflow.metadata.name = name.into();
+        workflow.spec.concurrency = Some(limit);
+        let record = workflows::create(pool, &workflow).await.unwrap();
+        workflows::activate(pool, &record.id, 1).await.unwrap();
+        record.id
+    }
+
+    #[tokio::test]
+    async fn claim_respects_the_workflow_concurrency_limit() {
+        let (pool, _, _dir) = setup().await;
+        let limited = limited_workflow(&pool, "limited", 1).await;
+        let first = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
+        let second = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
+        assert_eq!(claim(&pool, "w", 0, 1000).await.unwrap().unwrap().id, first);
+        assert!(claim(&pool, "w", 1, 1000).await.unwrap().is_none());
+        finish(&pool, &first, "w", "succeeded", None).await.unwrap();
+        assert_eq!(
+            claim(&pool, "w", 2, 1000).await.unwrap().unwrap().id,
+            second
+        );
+    }
+
+    #[tokio::test]
+    async fn a_limited_workflow_does_not_block_other_workflows() {
+        let (pool, free, _dir) = setup().await;
+        let limited = limited_workflow(&pool, "limited", 1).await;
+        ingest(&pool, &event(&limited, None)).await.unwrap();
+        ingest(&pool, &event(&limited, None)).await.unwrap();
+        let other = ingest(&pool, &event(&free, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        assert_eq!(claim(&pool, "w", 1, 1000).await.unwrap().unwrap().id, other);
+    }
+
+    #[tokio::test]
+    async fn a_crashed_run_does_not_hold_a_concurrency_slot() {
+        let (pool, _, _dir) = setup().await;
+        let limited = limited_workflow(&pool, "limited", 1).await;
+        let first = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
+        ingest(&pool, &event(&limited, None)).await.unwrap();
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        let reclaimed = claim(&pool, "w2", 5000, 1000).await.unwrap().unwrap();
+        assert_eq!(reclaimed.id, first);
+    }
+
+    #[tokio::test]
+    async fn a_higher_limit_allows_parallel_runs() {
+        let (pool, _, _dir) = setup().await;
+        let limited = limited_workflow(&pool, "limited", 2).await;
+        for _ in 0..3 {
+            ingest(&pool, &event(&limited, None)).await.unwrap();
+        }
+        assert!(claim(&pool, "w", 0, 1000).await.unwrap().is_some());
+        assert!(claim(&pool, "w", 1, 1000).await.unwrap().is_some());
+        assert!(claim(&pool, "w", 2, 1000).await.unwrap().is_none());
     }
 }
