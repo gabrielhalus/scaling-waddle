@@ -68,6 +68,7 @@ pub struct StepRun {
     pub error: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub wake_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,9 +177,10 @@ pub async fn claim(
     lease_ms: i64,
 ) -> Result<Option<Run>, sqlx::Error> {
     sqlx::query_as(&format!(
-        "UPDATE runs SET status = 'running', lease_owner = ?1, lease_expires_at = ?2 + ?3 \
+        "UPDATE runs SET status = 'running', lease_owner = ?1, lease_expires_at = ?2 + ?3, wake_at = NULL \
          WHERE id = (SELECT r.id FROM runs r \
-             WHERE (r.status = 'queued' OR (r.status = 'running' AND r.lease_expires_at < ?2)) \
+             WHERE (r.status = 'queued' OR (r.status = 'running' AND r.lease_expires_at < ?2) \
+                 OR (r.status = 'waiting' AND r.wake_at <= ?2)) \
              AND ({WORKFLOW_LIMIT} IS NULL OR \
                  (SELECT count(*) FROM runs o WHERE o.workflow_id = r.workflow_id \
                      AND o.status = 'running' AND o.lease_expires_at >= ?2) < {WORKFLOW_LIMIT}) \
@@ -190,6 +192,48 @@ pub async fn claim(
     .bind(lease_ms)
     .fetch_optional(pool)
     .await
+}
+
+pub async fn park(
+    pool: &SqlitePool,
+    run_id: &str,
+    owner: &str,
+    wake_at_ms: i64,
+) -> Result<bool, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE runs SET status = 'waiting', wake_at = ?3, lease_owner = NULL, lease_expires_at = NULL \
+         WHERE id = ?1 AND lease_owner = ?2 AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(owner)
+    .bind(wake_at_ms)
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected() == 1)
+}
+
+pub async fn wait_step(
+    pool: &SqlitePool,
+    run_id: &str,
+    step_id: &str,
+    wake_at_ms: i64,
+    output: &Value,
+) -> Result<(), RunError> {
+    let updated = sqlx::query(
+        "UPDATE step_runs SET status = 'waiting', wake_at = ?3, output = ?4, \
+         started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+         WHERE run_id = ?1 AND step_id = ?2",
+    )
+    .bind(run_id)
+    .bind(step_id)
+    .bind(wake_at_ms)
+    .bind(output.to_string())
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(RunError::NotFound);
+    }
+    Ok(())
 }
 
 pub async fn heartbeat(
@@ -432,7 +476,7 @@ pub async fn purge_finished(pool: &SqlitePool, older_than_days: u32) -> Result<u
 
 pub async fn steps(pool: &SqlitePool, run_id: &str) -> Result<Vec<StepRun>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT step_id, status, attempts, output, error, started_at, finished_at FROM step_runs \
+        "SELECT step_id, status, attempts, output, error, started_at, finished_at, wake_at FROM step_runs \
          WHERE run_id = ? ORDER BY rowid",
     )
     .bind(run_id)
@@ -971,6 +1015,78 @@ mod tests {
             .await
             .unwrap()
             .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_parked_run_is_claimed_only_once_its_wake_time_has_come() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        wait_step(&pool, &run, "a", 5000, &json!({ "seconds": 5 }))
+            .await
+            .unwrap();
+        assert!(park(&pool, &run, "w", 5000).await.unwrap());
+        let parked = get(&pool, &run).await.unwrap().unwrap();
+        assert_eq!(
+            (parked.status.as_str(), parked.lease_owner),
+            ("waiting", None)
+        );
+        assert!(claim(&pool, "w", 4999, 1000).await.unwrap().is_none());
+        let woken = claim(&pool, "w", 5000, 1000).await.unwrap().unwrap();
+        assert_eq!(woken.id, run);
+        assert_eq!(woken.status, "running");
+        let step = &steps(&pool, &run).await.unwrap()[0];
+        assert_eq!(
+            (step.status.as_str(), step.wake_at),
+            ("waiting", Some(5000))
+        );
+    }
+
+    #[tokio::test]
+    async fn park_requires_the_lease_owner() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        assert!(!park(&pool, &run, "intrus", 10).await.unwrap());
+        assert_eq!(get(&pool, &run).await.unwrap().unwrap().status, "running");
+    }
+
+    #[tokio::test]
+    async fn a_waiting_run_can_be_cancelled_at_once() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        wait_step(&pool, &run, "a", 9000, &json!({})).await.unwrap();
+        park(&pool, &run, "w", 9000).await.unwrap();
+        assert_eq!(
+            request_cancel(&pool, &run).await.unwrap(),
+            Cancellation::Cancelled
+        );
+        assert!(claim(&pool, "w", 99_999, 1000).await.unwrap().is_none());
+        assert!(
+            steps(&pool, &run)
+                .await
+                .unwrap()
+                .iter()
+                .all(|s| s.status == "cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_runs_do_not_hold_a_concurrency_slot() {
+        let (pool, _, _dir) = setup().await;
+        let limited = limited_workflow(&pool, "limited", 1).await;
+        let first = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
+        let second = ingest(&pool, &event(&limited, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        wait_step(&pool, &first, "a", 60_000, &json!({}))
+            .await
+            .unwrap();
+        park(&pool, &first, "w", 60_000).await.unwrap();
+        assert_eq!(
+            claim(&pool, "w", 1, 1000).await.unwrap().unwrap().id,
+            second
         );
     }
 }

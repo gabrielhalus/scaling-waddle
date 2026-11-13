@@ -1,0 +1,2 @@
+ALTER TABLE runs ADD COLUMN wake_at INTEGER;
+ALTER TABLE step_runs ADD COLUMN wake_at INTEGER;
