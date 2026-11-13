@@ -149,6 +149,7 @@ spec:
         expression: 'event.payload.status == "success"'
     - id: notify
       type: http.request
+      needs: [check-status]
       if: 'steps.check-status.result == true'
       with:
         integration: team-webhook
