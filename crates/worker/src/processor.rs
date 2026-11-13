@@ -695,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn unimplemented_step_types_fail_the_run() {
         let env = env().await;
-        let run = queued(&env, "    - {id: ask, type: notification}\n", json!({})).await;
+        let run = queued(&env, "    - {id: ask, type: script.run}\n", json!({})).await;
 
         process_run(&env.pool, &run, &env.settings).await.unwrap();
 

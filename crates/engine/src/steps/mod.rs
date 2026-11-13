@@ -59,6 +59,7 @@ pub async fn execute(kind: &str, with: &Value, vars: &Value, services: &Services
         "condition" => condition(with, vars),
         "transform" => transform(with, vars),
         "http.request" => http::execute(with, vars, services).await,
+        "notification" => notification(with, vars, services).await,
         other => StepOutcome::fatal(format!("type d'étape non implémenté: {other}")),
     }
 }
@@ -108,6 +109,21 @@ pub fn approval_request(with: &Value, vars: &Value) -> Result<ApprovalRequest, S
         message,
         timeout_seconds,
     })
+}
+
+async fn notification(with: &Value, vars: &Value, services: &Services) -> StepOutcome {
+    let Some(message) = with.get("message").filter(|message| message.is_string()) else {
+        return StepOutcome::fatal("`with.message` est requis et doit être une chaîne");
+    };
+    let mut request = with.as_object().cloned().unwrap_or_default();
+    request.remove("message");
+    request
+        .entry("method")
+        .or_insert_with(|| Value::String("POST".into()));
+    request
+        .entry("body")
+        .or_insert_with(|| json!({ "message": message }));
+    http::execute(&Value::Object(request), vars, services).await
 }
 
 fn condition(with: &Value, vars: &Value) -> StepOutcome {
@@ -269,5 +285,110 @@ mod tests {
     fn approval_request_rejects_a_bad_timeout() {
         let error = approval_request(&json!({ "timeout_seconds": 0 }), &json!({})).unwrap_err();
         assert!(error.contains("timeout_seconds"), "{error}");
+    }
+
+    mod notification {
+        use std::collections::BTreeMap;
+
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use super::*;
+        use crate::netguard::Policy;
+
+        fn services(server: &MockServer) -> Services {
+            let integration = Integration {
+                base_url: server.uri(),
+                headers: BTreeMap::new(),
+            };
+            Services::new(
+                Policy::parse_allowed("127.0.0.0/8").unwrap(),
+                BTreeMap::from([("chat".to_owned(), integration)]),
+            )
+        }
+
+        #[tokio::test]
+        async fn posts_the_rendered_message_as_json_by_default() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/hooks/x"))
+                .and(body_json(json!({ "message": "Déployé api" })))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let vars = json!({ "event": { "payload": { "service": "api" } } });
+            let outcome = execute(
+                "notification",
+                &json!({ "integration": "chat", "path": "/hooks/x", "message": "Déployé ${{ event.payload.service }}" }),
+                &vars,
+                &services(&server),
+            )
+            .await;
+            assert!(matches!(outcome, StepOutcome::Succeeded(_)), "{outcome:?}");
+        }
+
+        #[tokio::test]
+        async fn a_custom_body_replaces_the_default_shape() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(body_json(json!({ "text": "salut" })))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let outcome = execute(
+                "notification",
+                &json!({ "integration": "chat", "message": "ignoré", "body": { "text": "salut" } }),
+                &json!({}),
+                &services(&server),
+            )
+            .await;
+            assert!(matches!(outcome, StepOutcome::Succeeded(_)), "{outcome:?}");
+        }
+
+        #[tokio::test]
+        async fn a_message_is_required() {
+            let outcome = execute(
+                "notification",
+                &json!({ "integration": "chat" }),
+                &json!({}),
+                &Services::default(),
+            )
+            .await;
+            assert!(matches!(
+                outcome,
+                StepOutcome::Failed {
+                    retryable: false,
+                    ..
+                }
+            ));
+        }
+
+        #[tokio::test]
+        async fn delivery_errors_follow_the_http_retry_rules() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
+            let outcome = execute(
+                "notification",
+                &json!({ "integration": "chat", "message": "x" }),
+                &json!({}),
+                &services(&server),
+            )
+            .await;
+            assert!(
+                matches!(
+                    outcome,
+                    StepOutcome::Failed {
+                        retryable: true,
+                        ..
+                    }
+                ),
+                "{outcome:?}"
+            );
+        }
     }
 }
