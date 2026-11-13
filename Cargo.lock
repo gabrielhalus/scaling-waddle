@@ -2409,9 +2409,11 @@ dependencies = [
  "reqwest",
  "serde_json",
  "sw-domain",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
