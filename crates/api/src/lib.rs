@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod audit;
 pub mod auth;
+pub mod connectors;
 pub mod error;
 pub mod health;
 pub mod integrations;
@@ -25,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .merge(auth::routes())
         .merge(workflows::routes())
         .merge(triggers::routes())
+        .merge(connectors::routes())
         .merge(runs::routes())
         .merge(integrations::routes())
         .merge(approvals::routes())

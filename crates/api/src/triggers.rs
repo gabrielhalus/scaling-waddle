@@ -64,11 +64,11 @@ fn printable(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|b| b.is_ascii_graphic())
 }
 
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
-fn parse_payload(body: &Bytes) -> Result<Value, ApiError> {
+pub(crate) fn parse_payload(body: &Bytes) -> Result<Value, ApiError> {
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(Value::Null);
     }
@@ -76,7 +76,7 @@ fn parse_payload(body: &Bytes) -> Result<Value, ApiError> {
         .map_err(|err| ApiError::BadRequest(format!("corps JSON invalide: {err}")))
 }
 
-async fn ingest(
+pub(crate) async fn ingest(
     state: &AppState,
     workflow_id: &str,
     source: &str,
@@ -130,13 +130,12 @@ fn now_secs() -> i64 {
         })
 }
 
-async fn webhook(
-    State(state): State<AppState>,
-    Path(token): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let key = webhook_tokens::hash(&token);
+// Applique la limite de débit puis retrouve le workflow du jeton.
+pub(crate) async fn resolve_token(
+    state: &AppState,
+    token: &str,
+) -> Result<webhook_tokens::Resolved, ApiError> {
+    let key = webhook_tokens::hash(token);
     let now = Instant::now();
     if let Some(wait) = state.webhook_limiter.retry_after(&key, now) {
         return Err(ApiError::TooManyRequests {
@@ -144,9 +143,18 @@ async fn webhook(
         });
     }
     state.webhook_limiter.record_failure(&key, now);
-    let resolved = webhook_tokens::resolve(&state.db, &state.keyring, &token)
+    webhook_tokens::resolve(&state.db, &state.keyring, token)
         .await?
-        .ok_or(ApiError::NotFound)?;
+        .ok_or(ApiError::NotFound)
+}
+
+async fn webhook(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let resolved = resolve_token(&state, &token).await?;
     if let Some(secret) = &resolved.signing_secret {
         let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
         signature::verify(
