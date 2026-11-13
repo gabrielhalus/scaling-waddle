@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useState } from 'react'
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import {
   Link,
   Outlet,
@@ -9,33 +9,38 @@ import {
   createRouter,
   redirect,
   useNavigate,
-} from '@tanstack/react-router'
+} from "@tanstack/react-router";
 
-import type { ApiClient } from './lib/api'
-import { ClientProvider } from './lib/client-context'
-import { LoginPage } from './pages/login'
-import { ApprovalsPage } from './pages/approvals'
-import { AuditPage } from './pages/audit'
-import { IntegrationsPage } from './pages/integrations'
-import { OverviewPage } from './pages/overview'
-import { RunDetailPage } from './pages/run-detail'
-import { RunsPage } from './pages/runs'
-import { WorkflowsPage } from './pages/workflows'
+import type { ApiClient } from "./lib/api";
+import { ClientProvider } from "./lib/client-context";
+import { LoginPage } from "./pages/login";
+import { ApprovalsPage } from "./pages/approvals";
+import { AuditPage } from "./pages/audit";
+import { IntegrationsPage } from "./pages/integrations";
+import { OverviewPage } from "./pages/overview";
+import { RunDetailPage } from "./pages/run-detail";
+import { RunsPage } from "./pages/runs";
+import { WorkflowDetailPage } from "./pages/workflow-detail";
+import { WorkflowsPage } from "./pages/workflows";
 
 export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
-  const root = createRootRoute({ component: Outlet })
+  const root = createRootRoute({ component: Outlet });
 
   const shell = createRoute({
     getParentRoute: () => root,
-    id: 'shell',
+    id: "shell",
     beforeLoad: () => {
-      if (!client.isAuthenticated()) throw redirect({ to: '/login' })
+      if (!client.isAuthenticated()) throw redirect({ to: "/login" });
     },
     component: function Shell() {
       return (
         <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 p-6">
           <nav className="flex gap-4 text-sm">
-            <Link to="/" activeOptions={{ exact: true }} className="[&.active]:font-semibold">
+            <Link
+              to="/"
+              activeOptions={{ exact: true }}
+              className="[&.active]:font-semibold"
+            >
               Overview
             </Link>
             <Link to="/workflows" className="[&.active]:font-semibold">
@@ -58,128 +63,178 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
             <Outlet />
           </main>
         </div>
-      )
+      );
     },
-  })
+  });
 
   const overview = createRoute({
     getParentRoute: () => shell,
-    path: '/',
+    path: "/",
     component: function Overview() {
-      const navigate = useNavigate()
+      const navigate = useNavigate();
       return (
         <OverviewPage
           onLogout={() => {
-            queryClient.clear()
-            void navigate({ to: '/login' })
+            queryClient.clear();
+            void navigate({ to: "/login" });
           }}
         />
-      )
+      );
     },
-  })
+  });
 
   const workflows = createRoute({
     getParentRoute: () => shell,
-    path: '/workflows',
+    path: "/workflows",
     component: function Workflows() {
-      const navigate = useNavigate()
+      const navigate = useNavigate();
       return (
         <WorkflowsPage
-          onOpenRuns={(workflowId) => void navigate({ to: '/runs', search: { workflow_id: workflowId } })}
+          onOpenRuns={(workflowId) =>
+            void navigate({ to: "/runs", search: { workflow_id: workflowId } })
+          }
+          onOpen={(workflowId) =>
+            void navigate({
+              to: "/workflows/$workflowId",
+              params: { workflowId },
+            })
+          }
         />
-      )
+      );
     },
-  })
+  });
+
+  const workflowDetail = createRoute({
+    getParentRoute: () => shell,
+    path: "/workflows/$workflowId",
+    component: function WorkflowDetail() {
+      const navigate = useNavigate();
+      const { workflowId } = workflowDetail.useParams();
+      return (
+        <WorkflowDetailPage
+          key={workflowId}
+          id={workflowId}
+          onOpenRun={(runId) =>
+            void navigate({ to: "/runs/$runId", params: { runId } })
+          }
+        />
+      );
+    },
+  });
 
   const runs = createRoute({
     getParentRoute: () => shell,
-    path: '/runs',
-    validateSearch: (search: Record<string, unknown>): { workflow_id?: string } =>
-      typeof search.workflow_id === 'string' ? { workflow_id: search.workflow_id } : {},
+    path: "/runs",
+    validateSearch: (
+      search: Record<string, unknown>,
+    ): { workflow_id?: string } =>
+      typeof search.workflow_id === "string"
+        ? { workflow_id: search.workflow_id }
+        : {},
     component: function Runs() {
-      const navigate = useNavigate()
-      const { workflow_id } = runs.useSearch()
+      const navigate = useNavigate();
+      const { workflow_id } = runs.useSearch();
       return (
         <RunsPage
           workflowId={workflow_id}
-          onOpenRun={(runId) => void navigate({ to: '/runs/$runId', params: { runId } })}
+          onOpenRun={(runId) =>
+            void navigate({ to: "/runs/$runId", params: { runId } })
+          }
         />
-      )
+      );
     },
-  })
+  });
 
   const approvals = createRoute({
     getParentRoute: () => shell,
-    path: '/approvals',
+    path: "/approvals",
     component: function Approvals() {
-      const navigate = useNavigate()
+      const navigate = useNavigate();
       return (
         <ApprovalsPage
-          onOpenRun={(runId) => void navigate({ to: '/runs/$runId', params: { runId } })}
+          onOpenRun={(runId) =>
+            void navigate({ to: "/runs/$runId", params: { runId } })
+          }
         />
-      )
+      );
     },
-  })
+  });
 
   const integrations = createRoute({
     getParentRoute: () => shell,
-    path: '/integrations',
+    path: "/integrations",
     component: IntegrationsPage,
-  })
+  });
 
   const audit = createRoute({
     getParentRoute: () => shell,
-    path: '/audit',
+    path: "/audit",
     component: AuditPage,
-  })
+  });
 
   const runDetail = createRoute({
     getParentRoute: () => shell,
-    path: '/runs/$runId',
+    path: "/runs/$runId",
     component: function RunDetail() {
-      const navigate = useNavigate()
-      const { runId } = runDetail.useParams()
+      const navigate = useNavigate();
+      const { runId } = runDetail.useParams();
       return (
         <RunDetailPage
           key={runId}
           id={runId}
-          onOpenRun={(id) => void navigate({ to: '/runs/$runId', params: { runId: id } })}
+          onOpenRun={(id) =>
+            void navigate({ to: "/runs/$runId", params: { runId: id } })
+          }
         />
-      )
+      );
     },
-  })
+  });
 
   const login = createRoute({
     getParentRoute: () => root,
-    path: '/login',
+    path: "/login",
     beforeLoad: () => {
-      if (client.isAuthenticated()) throw redirect({ to: '/' })
+      if (client.isAuthenticated()) throw redirect({ to: "/" });
     },
     component: function Login() {
-      const navigate = useNavigate()
-      return <LoginPage onDone={() => void navigate({ to: '/' })} />
+      const navigate = useNavigate();
+      return <LoginPage onDone={() => void navigate({ to: "/" })} />;
     },
-  })
+  });
 
-  return createRouter({ routeTree: root.addChildren([shell.addChildren([overview, workflows, runs, runDetail, approvals, integrations, audit]), login]) })
+  return createRouter({
+    routeTree: root.addChildren([
+      shell.addChildren([
+        overview,
+        workflows,
+        workflowDetail,
+        runs,
+        runDetail,
+        approvals,
+        integrations,
+        audit,
+      ]),
+      login,
+    ]),
+  });
 }
 
 export function App({ client }: { client: ApiClient }) {
   const [{ queryClient, router }] = useState(() => {
-    const queryClient = new QueryClient()
-    return { queryClient, router: createAppRouter(client, queryClient) }
-  })
+    const queryClient = new QueryClient();
+    return { queryClient, router: createAppRouter(client, queryClient) };
+  });
   return (
     <QueryClientProvider client={queryClient}>
       <ClientProvider value={client}>
         <RouterProvider router={router} />
       </ClientProvider>
     </QueryClientProvider>
-  )
+  );
 }
 
-declare module '@tanstack/react-router' {
+declare module "@tanstack/react-router" {
   interface Register {
-    router: ReturnType<typeof createAppRouter>
+    router: ReturnType<typeof createAppRouter>;
   }
 }

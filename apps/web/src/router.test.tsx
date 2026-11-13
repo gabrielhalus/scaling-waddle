@@ -68,4 +68,23 @@ describe('App routing', () => {
     await userEvent.click(screen.getByRole('link', { name: 'Audit' }))
     expect(await screen.findByText('Aucun événement.')).toBeInTheDocument()
   })
+
+  it('opens a workflow detail page from the list', async () => {
+    const client = {
+      ...fakeClient(true),
+      workflows: vi.fn().mockResolvedValue([
+        { id: 'w1', project: 'ops', name: 'notify', active_version: 1, latest_version: 1 },
+      ]),
+      workflow: vi.fn().mockResolvedValue({
+        workflow: { id: 'w1', project: 'ops', name: 'notify', active_version: 1, latest_version: 1 },
+        versions: [{ version: 1, hash: 'abcdef123456', created_at: '2026-11-13T10:00:00.000Z' }],
+      }),
+      webhookTokens: vi.fn().mockResolvedValue([]),
+    } as unknown as ApiClient
+    window.history.replaceState(null, '', '/workflows')
+    render(<App client={client} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'notify' }))
+    expect(await screen.findByText('v1 · active')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/workflows/w1')
+  })
 })
