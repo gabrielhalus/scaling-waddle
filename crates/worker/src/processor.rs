@@ -11,7 +11,7 @@ use sw_engine::steps::{self, Integration, Services, StepOutcome};
 use sw_infrastructure::crypto::Keyring;
 use sw_infrastructure::runs::{self, Parked, Run, RunError};
 use sw_infrastructure::workflows::WorkflowError;
-use sw_infrastructure::{approvals, integrations, secrets, workflows};
+use sw_infrastructure::{approvals, audit, integrations, secrets, workflows};
 use tokio::task::{JoinHandle, JoinSet};
 
 const MAX_BACKOFF_SECS: u64 = 3600;
@@ -127,7 +127,9 @@ pub async fn process_run(
         }
         if let Some(outcome) = scheduler::outcome(&states) {
             let (status, error) = summarise(outcome, &rows);
-            if !runs::finish(pool, &run.id, &settings.owner, status, error.as_deref()).await? {
+            if runs::finish(pool, &run.id, &settings.owner, status, error.as_deref()).await? {
+                audit_finish(pool, run, status).await;
+            } else {
                 tracing::warn!(run_id = %run.id, "run non terminé : bail perdu");
             }
             return Ok(());
@@ -157,14 +159,10 @@ pub async fn process_run(
                     }
                 }
             }
-            runs::finish(
-                pool,
-                &run.id,
-                &settings.owner,
-                "failed",
-                Some("plan bloqué : aucune étape exécutable"),
-            )
-            .await?;
+            let message = Some("plan bloqué : aucune étape exécutable");
+            if runs::finish(pool, &run.id, &settings.owner, "failed", message).await? {
+                audit_finish(pool, run, "failed").await;
+            }
             return Ok(());
         }
         let mut tasks = JoinSet::new();
@@ -281,6 +279,15 @@ async fn wake_due_steps(pool: &SqlitePool, run_id: &str) -> Result<(), RunError>
         }
     }
     Ok(())
+}
+
+async fn audit_finish(pool: &SqlitePool, run: &Run, status: &str) {
+    let details =
+        json!({ "status": status, "workflow_id": run.workflow_id, "version": run.version });
+    if let Err(err) = audit::record(pool, "system", "run.finished", "run", &run.id, &details).await
+    {
+        tracing::error!(run_id = %run.id, %err, "écriture d'audit en échec");
+    }
 }
 
 async fn build_services(
@@ -1091,5 +1098,40 @@ mod tests {
 
         let stored = runs::steps(&env.pool, &run.id).await.unwrap();
         assert!(!format!("{stored:?}").contains("s3cret"));
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_leaves_an_audit_entry_but_a_parked_one_does_not() {
+        let env = env().await;
+        let done = queued(
+            &env,
+            "    - {id: a, type: transform, with: {value: 1}}\n",
+            json!({}),
+        )
+        .await;
+        process_run(&env.pool, &done, &env.settings).await.unwrap();
+        let events = audit::list(&env.pool, Some("run.finished"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            (events[0].actor.as_str(), events[0].target_id.as_str()),
+            ("system", done.id.as_str())
+        );
+        assert!(events[0].details.contains("succeeded"));
+
+        let parked = queued(
+            &env,
+            "    - {id: p, type: delay, with: {seconds: 60}}\n",
+            json!({}),
+        )
+        .await;
+        process_run(&env.pool, &parked, &env.settings)
+            .await
+            .unwrap();
+        let events = audit::list(&env.pool, Some("run.finished"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
     }
 }
