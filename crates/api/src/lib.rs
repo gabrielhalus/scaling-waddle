@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod error;
 pub mod health;
+pub mod runs;
 pub mod state;
 #[cfg(test)]
 mod testing;
@@ -17,5 +18,6 @@ pub fn router(state: AppState) -> Router {
         .merge(auth::routes())
         .merge(workflows::routes())
         .merge(triggers::routes())
+        .merge(runs::routes())
         .with_state(state)
 }
