@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use sw_engine::netguard::Policy;
 use sw_infrastructure::{config::Config, db, shutdown, telemetry};
 
 #[tokio::main]
@@ -11,6 +12,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let pool = db::open(&config.database_path).await?;
     tracing::info!("worker démarré");
-    sw_worker::run(pool, Duration::from_millis(500), shutdown::signal()).await;
+    let settings = sw_worker::Settings {
+        owner: format!("worker-{}", uuid::Uuid::new_v4()),
+        lease_ms: 30_000,
+        backoff_unit: Duration::from_secs(1),
+        policy: Policy::parse_allowed(&config.allowed_internal_networks)?,
+    };
+    sw_worker::run(
+        pool,
+        settings,
+        Duration::from_millis(500),
+        shutdown::signal(),
+    )
+    .await;
     Ok(())
 }

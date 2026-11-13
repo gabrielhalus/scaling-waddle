@@ -6,6 +6,7 @@ pub struct Config {
     pub database_path: PathBuf,
     pub bind: SocketAddr,
     pub jwt_secret: String,
+    pub allowed_internal_networks: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +32,7 @@ impl Config {
                 .map_or_else(|| PathBuf::from("data/scaling-waddle.db"), PathBuf::from),
             bind: bind.parse().map_err(|_| ConfigError::Bind(bind))?,
             jwt_secret,
+            allowed_internal_networks: lookup("SW_ALLOWED_INTERNAL_NETWORKS").unwrap_or_default(),
         })
     }
 }
@@ -74,6 +76,22 @@ mod tests {
             other => only_secret(other),
         });
         assert!(matches!(result, Err(ConfigError::Bind(_))));
+    }
+
+    #[test]
+    fn allowed_internal_networks_default_to_empty_and_can_be_set() {
+        assert_eq!(
+            Config::from_lookup(only_secret)
+                .unwrap()
+                .allowed_internal_networks,
+            ""
+        );
+        let config = Config::from_lookup(|key| match key {
+            "SW_ALLOWED_INTERNAL_NETWORKS" => Some("10.0.0.0/8".to_owned()),
+            other => only_secret(other),
+        })
+        .unwrap();
+        assert_eq!(config.allowed_internal_networks, "10.0.0.0/8");
     }
 
     #[test]
