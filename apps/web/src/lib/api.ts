@@ -56,6 +56,35 @@ export type Approval = {
   comment: string | null
 }
 
+export type Integration = {
+  id: string
+  project: string
+  name: string
+  base_url: string
+  headers: Record<string, string>
+  created_at: string
+}
+
+export type NewIntegration = Omit<Integration, 'id' | 'created_at'>
+
+export type Secret = {
+  project: string
+  name: string
+  key_id: string
+  created_at: string
+  updated_at: string
+}
+
+export type AuditEvent = {
+  id: number
+  at: string
+  actor: string
+  action: string
+  target_type: string
+  target_id: string
+  details: unknown
+}
+
 type TokenResponse = { access_token: string; refresh_token: string; expires_in: number }
 
 export type TokenStorage = {
@@ -201,6 +230,25 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
         method: 'POST',
         body: JSON.stringify({ decision, comment }),
       }),
+    integrations: () => request<Integration[]>('/api/v1/integrations'),
+    createIntegration: (input: NewIntegration) =>
+      request<Integration>('/api/v1/integrations', { method: 'POST', body: JSON.stringify(input) }),
+    deleteIntegration: (id: string) =>
+      request<void>(`/api/v1/integrations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    secrets: () => request<Secret[]>('/api/v1/secrets'),
+    setSecret: (project: string, name: string, value: string) =>
+      request<void>(`/api/v1/secrets/${encodeURIComponent(project)}/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+      }),
+    deleteSecret: (project: string, name: string) =>
+      request<void>(`/api/v1/secrets/${encodeURIComponent(project)}/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      }),
+    audit: (filter: { action?: string } = {}) =>
+      request<AuditEvent[]>(
+        `/api/v1/audit${filter.action ? `?action=${encodeURIComponent(filter.action)}` : ''}`,
+      ),
     isAuthenticated: () => storage.get() !== null,
   }
 }

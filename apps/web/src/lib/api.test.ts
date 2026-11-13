@@ -160,4 +160,42 @@ describe('api client', () => {
     const init = fetchMock.mock.calls[2][1] as RequestInit
     expect(JSON.parse(init.body as string)).toEqual({ decision: 'approve', comment: 'ok' })
   })
+
+  it('manages integrations and secrets', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.integrations()
+    await client.createIntegration({
+      project: 'p',
+      name: 'hook',
+      base_url: 'https://x.example.com',
+      headers: { authorization: 'Bearer ${secret:t}' },
+    })
+    await client.deleteIntegration('i 1')
+    await client.secrets()
+    await client.setSecret('p', 'tok', 'v')
+    await client.deleteSecret('p', 'tok')
+
+    const calls = fetchMock.mock.calls.map((call) => [call[0], (call[1] as RequestInit | undefined)?.method])
+    expect(calls).toEqual([
+      ['/api/v1/integrations', undefined],
+      ['/api/v1/integrations', 'POST'],
+      ['/api/v1/integrations/i%201', 'DELETE'],
+      ['/api/v1/secrets', undefined],
+      ['/api/v1/secrets/p/tok', 'PUT'],
+      ['/api/v1/secrets/p/tok', 'DELETE'],
+    ])
+  })
+
+  it('reads the audit trail with filters', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.audit()
+    await client.audit({ action: 'run.cancel' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/audit')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/audit?action=run.cancel')
+  })
 })
