@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "typecheck": "tsc -b",
     "test": "vitest run",
+    "e2e": "vite build && playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,6 +19,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@tailwindcss/vite": "^4.3.5",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
