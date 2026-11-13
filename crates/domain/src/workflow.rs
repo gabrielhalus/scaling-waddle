@@ -37,6 +37,32 @@ pub struct Metadata {
 
 use crate::cron;
 
+fn valid_events(config: &Value) -> bool {
+    match config.get("events") {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(items)) => {
+            (1..=50).contains(&items.len())
+                && items.iter().all(|item| {
+                    item.as_str()
+                        .is_some_and(|text| !text.trim().is_empty() && text.len() <= 80)
+                })
+        }
+        Some(_) => false,
+    }
+}
+
+// Motif exact, ou préfixe terminé par `.*` (`gitlab.*`).
+pub fn event_matches(patterns: &[String], kind: &str) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| match pattern.strip_suffix(".*") {
+            Some(prefix) => kind
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.')),
+            None => pattern == kind,
+        })
+}
+
 const MAX_CONCURRENCY: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,6 +141,10 @@ pub enum ValidationError {
         "déclencheur cron invalide: `config.schedule` doit être une expression à 5 champs valide"
     )]
     InvalidSchedule,
+    #[error(
+        "`config.events` doit être une liste de 1 à 50 motifs (texte non vide, 80 caractères max)"
+    )]
+    InvalidEvents,
     #[error("type d'étape inconnu pour {step}: {step_type}")]
     UnknownStepType { step: String, step_type: String },
     #[error("l'étape {step} dépend d'une étape inconnue: {needs}")]
@@ -176,6 +206,9 @@ impl Workflow {
                 }
             }
             other => errors.push(ValidationError::UnsupportedTrigger(other.to_owned())),
+        }
+        if !valid_events(&self.spec.trigger.config) {
+            errors.push(ValidationError::InvalidEvents);
         }
         if self
             .spec
@@ -714,5 +747,42 @@ spec:
             workflow.spec.trigger.kind = kind.into();
             assert!(workflow.validate().is_ok(), "{kind}");
         }
+    }
+
+    #[test]
+    fn trigger_events_must_be_a_bounded_list_of_patterns() {
+        let mut workflow = parse_yaml(VALID);
+        for (config, ok) in [
+            (json!({ "events": ["gitlab.push"] }), true),
+            (json!({ "events": null }), true),
+            (json!({}), true),
+            (json!({ "events": [] }), false),
+            (json!({ "events": "gitlab.push" }), false),
+            (json!({ "events": [""] }), false),
+            (json!({ "events": [3] }), false),
+            (json!({ "events": ["x".repeat(81)] }), false),
+            (json!({ "events": vec!["a"; 51] }), false),
+        ] {
+            workflow.spec.trigger.config = config.clone();
+            assert_eq!(workflow.validate().is_ok(), ok, "{config}");
+        }
+    }
+
+    #[test]
+    fn event_patterns_match_exactly_or_by_dotted_prefix() {
+        let patterns = |list: &[&str]| list.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        assert!(event_matches(&patterns(&["gitlab.push"]), "gitlab.push"));
+        assert!(!event_matches(&patterns(&["gitlab.push"]), "gitlab.pushed"));
+        assert!(event_matches(
+            &patterns(&["gitlab.*"]),
+            "gitlab.merge_request"
+        ));
+        assert!(!event_matches(&patterns(&["gitlab.*"]), "gitlab"));
+        assert!(!event_matches(&patterns(&["gitlab.*"]), "gitlabx.push"));
+        assert!(event_matches(
+            &patterns(&["a.b", "uptime-kuma.down"]),
+            "uptime-kuma.down"
+        ));
+        assert!(!event_matches(&patterns(&[]), "gitlab.push"));
     }
 }
