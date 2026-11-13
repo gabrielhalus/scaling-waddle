@@ -10,6 +10,10 @@ pub enum RunError {
     NotFound,
     #[error("le workflow n'a pas de version active")]
     NotActive,
+    #[error("run déjà terminé")]
+    AlreadyFinished,
+    #[error("seul un run échoué ou annulé peut être relancé")]
+    NotRetryable,
     #[error("statut final invalide: {0}")]
     InvalidStatus(String),
     #[error("définition illisible: {0}")]
@@ -33,6 +37,12 @@ pub struct Ingested {
     pub event_id: String,
     pub run_id: String,
     pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancellation {
+    Cancelled,
+    Requested,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -300,6 +310,96 @@ pub async fn reset_running_steps(pool: &SqlitePool, run_id: &str) -> Result<u64,
     .execute(pool)
     .await?
     .rows_affected())
+}
+
+pub async fn request_cancel(pool: &SqlitePool, run_id: &str) -> Result<Cancellation, RunError> {
+    let mut tx = pool.begin().await?;
+    let cancelled = sqlx::query(
+        "UPDATE runs SET status = 'cancelled', finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = ? AND status IN ('queued', 'waiting')",
+    )
+    .bind(run_id)
+    .execute(&mut *tx)
+    .await?;
+    if cancelled.rows_affected() == 1 {
+        sqlx::query(
+            "UPDATE step_runs SET status = 'cancelled', \
+             finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE run_id = ? AND status IN ('pending', 'waiting')",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(Cancellation::Cancelled);
+    }
+    let requested =
+        sqlx::query("UPDATE runs SET cancel_requested = 1 WHERE id = ? AND status = 'running'")
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
+    if requested.rows_affected() == 1 {
+        tx.commit().await?;
+        return Ok(Cancellation::Requested);
+    }
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM runs WHERE id = ?")
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    Err(if exists.is_some() {
+        RunError::AlreadyFinished
+    } else {
+        RunError::NotFound
+    })
+}
+
+pub async fn cancel_requested(pool: &SqlitePool, run_id: &str) -> Result<bool, sqlx::Error> {
+    let flag: Option<i64> = sqlx::query_scalar("SELECT cancel_requested FROM runs WHERE id = ?")
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(flag == Some(1))
+}
+
+pub async fn cancel_pending_steps(pool: &SqlitePool, run_id: &str) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE step_runs SET status = 'cancelled', \
+         finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE run_id = ? AND status IN ('pending', 'waiting')",
+    )
+    .bind(run_id)
+    .execute(pool)
+    .await?
+    .rows_affected())
+}
+
+pub async fn retry(pool: &SqlitePool, run_id: &str) -> Result<String, RunError> {
+    let mut tx = pool.begin().await?;
+    let original: Run = sqlx::query_as(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?"))
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RunError::NotFound)?;
+    if !matches!(original.status.as_str(), "failed" | "cancelled") {
+        return Err(RunError::NotRetryable);
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO runs (id, workflow_id, version, event_id) VALUES (?, ?, ?, ?)")
+        .bind(&new_id)
+        .bind(&original.workflow_id)
+        .bind(original.version)
+        .bind(&original.event_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO step_runs (run_id, step_id) SELECT ?, step_id FROM step_runs WHERE run_id = ? ORDER BY rowid",
+    )
+    .bind(&new_id)
+    .bind(run_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(new_id)
 }
 
 pub async fn steps(pool: &SqlitePool, run_id: &str) -> Result<Vec<StepRun>, sqlx::Error> {
@@ -614,5 +714,107 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_queued_run_ends_it_at_once() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        assert_eq!(
+            request_cancel(&pool, &run).await.unwrap(),
+            Cancellation::Cancelled
+        );
+        let found = get(&pool, &run).await.unwrap().unwrap();
+        assert_eq!(found.status, "cancelled");
+        assert!(found.finished_at.is_some());
+        assert!(
+            steps(&pool, &run)
+                .await
+                .unwrap()
+                .iter()
+                .all(|s| s.status == "cancelled")
+        );
+        assert!(claim(&pool, "w", 0, 1000).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_running_run_only_raises_the_flag() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        assert!(!cancel_requested(&pool, &run).await.unwrap());
+        assert_eq!(
+            request_cancel(&pool, &run).await.unwrap(),
+            Cancellation::Requested
+        );
+        assert!(cancel_requested(&pool, &run).await.unwrap());
+        assert_eq!(get(&pool, &run).await.unwrap().unwrap().status, "running");
+        assert_eq!(cancel_pending_steps(&pool, &run).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_finished_and_unknown_runs() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        finish(&pool, &run, "w", "succeeded", None).await.unwrap();
+        assert!(matches!(
+            request_cancel(&pool, &run).await,
+            Err(RunError::AlreadyFinished)
+        ));
+        assert!(matches!(
+            request_cancel(&pool, "nope").await,
+            Err(RunError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_clones_a_failed_run_with_fresh_steps() {
+        let (pool, wf, _dir) = setup().await;
+        let first = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        claim(&pool, "w", 0, 1000).await.unwrap().unwrap();
+        set_step(&pool, &first, "a", "failed", None, Some("boom"), 1)
+            .await
+            .unwrap();
+        finish(&pool, &first, "w", "failed", Some("boom"))
+            .await
+            .unwrap();
+        let second = retry(&pool, &first).await.unwrap();
+        let (old, new) = (
+            get(&pool, &first).await.unwrap().unwrap(),
+            get(&pool, &second).await.unwrap().unwrap(),
+        );
+        assert_ne!(first, second);
+        assert_eq!(
+            (new.status.as_str(), new.event_id, new.version),
+            ("queued", old.event_id, old.version)
+        );
+        let fresh = steps(&pool, &second).await.unwrap();
+        assert_eq!(
+            fresh.iter().map(|s| s.step_id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(
+            fresh
+                .iter()
+                .all(|s| s.status == "pending" && s.attempts == 0)
+        );
+        assert_eq!(get(&pool, &first).await.unwrap().unwrap().status, "failed");
+    }
+
+    #[tokio::test]
+    async fn retry_only_applies_to_failed_or_cancelled_runs() {
+        let (pool, wf, _dir) = setup().await;
+        let run = ingest(&pool, &event(&wf, None)).await.unwrap().run_id;
+        assert!(matches!(
+            retry(&pool, &run).await,
+            Err(RunError::NotRetryable)
+        ));
+        assert!(matches!(
+            retry(&pool, "nope").await,
+            Err(RunError::NotFound)
+        ));
+        request_cancel(&pool, &run).await.unwrap();
+        assert!(retry(&pool, &run).await.is_ok());
     }
 }
