@@ -112,4 +112,37 @@ describe('api client', () => {
 
     expect(await client.health()).toEqual({ status: 'unavailable', database: 'down' })
   })
+
+  it('lists runs with the filters in the query string', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.runs({ workflowId: 'w1', status: 'failed' })
+    await client.runs()
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/runs?workflow_id=w1&status=failed')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/runs')
+  })
+
+  it('reads workflows and a run detail', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.workflows()
+    await client.run('r 1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/runs/r%201')
+  })
+
+  it('posts cancel and retry', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, { run_id: 'x', status: 'cancelled' }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.cancelRun('r1')
+    await client.retryRun('r1')
+
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/v1/runs/r1/cancel', expect.objectContaining({ method: 'POST' })])
+    expect(fetchMock.mock.calls[1]).toEqual(['/api/v1/runs/r1/retry', expect.objectContaining({ method: 'POST' })])
+  })
 })

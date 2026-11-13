@@ -4,6 +4,43 @@ export type User = { id: string; email: string; role: 'admin' | 'operator' | 'vi
 
 export type Health = { status: 'ok' | 'unavailable'; database: 'ok' | 'down' }
 
+export type Workflow = {
+  id: string
+  project: string
+  name: string
+  active_version: number | null
+  latest_version: number
+}
+
+export type RunStatus = 'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled'
+
+export type Run = {
+  id: string
+  workflow_id: string
+  version: number
+  event_id: string
+  status: RunStatus
+  error: string | null
+  created_at: string
+  finished_at: string | null
+}
+
+export type StepRun = {
+  step_id: string
+  status: string
+  attempts: number
+  output: unknown
+  error: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type RunDetail = {
+  run: Run
+  event: { source: string; type: string; payload: unknown; correlation_id: string }
+  steps: StepRun[]
+}
+
 type TokenResponse = { access_token: string; refresh_token: string; expires_in: number }
 
 export type TokenStorage = {
@@ -127,6 +164,21 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
       const res = await send('/health/ready', {}, false)
       return (await res.json()) as Health
     },
+    workflows: () => request<Workflow[]>('/api/v1/workflows'),
+    runs: (filter: { workflowId?: string; status?: RunStatus } = {}) => {
+      const query = new URLSearchParams()
+      if (filter.workflowId) query.set('workflow_id', filter.workflowId)
+      if (filter.status) query.set('status', filter.status)
+      const text = query.toString()
+      return request<Run[]>(`/api/v1/runs${text ? `?${text}` : ''}`)
+    },
+    run: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}`),
+    cancelRun: (id: string) =>
+      request<{ run_id: string; status: string }>(`/api/v1/runs/${encodeURIComponent(id)}/cancel`, {
+        method: 'POST',
+      }),
+    retryRun: (id: string) =>
+      request<{ run_id: string }>(`/api/v1/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
     isAuthenticated: () => storage.get() !== null,
   }
 }
