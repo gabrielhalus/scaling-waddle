@@ -61,6 +61,8 @@ La sortie est `{result, cost_usd, turns}`. L'agent s'appelle par `claude -p`, **
 
 Authentification : lancez `claude setup-token` avec votre abonnement et placez le jeton dans `SW_AGENT_OAUTH_TOKEN`. L'usage doit rester celui d'une personne dans les quotas de son abonnement ; vérifiez les conditions d'utilisation en vigueur avant tout autre déploiement.
 
+Dans Docker, construisez la cible qui embarque la CLI (`docker build -f docker/Dockerfile --target agent .`, `SW_AGENT_COMMAND=claude` déjà positionné) ; l'image par défaut n'en contient pas.
+
 Attention : un prompt construit depuis un payload externe (webhook, GitLab, Uptime Kuma) peut contenir des instructions hostiles. Sans outil, l'agent ne peut rien exécuter, mais sa réponse reste une donnée non fiable : ne la transmettez pas telle quelle à une action sensible sans approbation.
 
 ## Déploiement avec Docker Compose
