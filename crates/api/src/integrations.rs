@@ -44,13 +44,28 @@ impl From<IntegrationError> for ApiError {
     }
 }
 
+// Les valeurs en clair ne sont jamais renvoyées ; seules les références `${secret:...}` restent lisibles.
+fn masked_headers(headers: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let shown = if value.contains("${secret:") {
+                value.as_str()
+            } else {
+                "***"
+            };
+            (name.as_str(), shown)
+        })
+        .collect()
+}
+
 fn record_json(record: &IntegrationRecord) -> Value {
     json!({
         "id": record.id,
         "project": record.project,
         "name": record.name,
         "base_url": record.base_url,
-        "headers": record.headers,
+        "headers": masked_headers(&record.headers),
         "created_at": record.created_at,
     })
 }
@@ -169,7 +184,7 @@ mod tests {
         let (status, created) = h.post("/api/v1/integrations", body("hook")).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(created["name"], "hook");
-        assert_eq!(created["headers"]["x-team"], "a");
+        assert_eq!(created["headers"]["x-team"], "***");
         let (status, listed) = h.get("/api/v1/integrations").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed.as_array().unwrap().len(), 1);
@@ -262,5 +277,23 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (_, listed) = h.get("/api/v1/integrations").await;
         assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plain_header_values_are_masked_but_secret_references_stay_readable() {
+        let h = harness().await;
+        let (_, created) = h
+            .post(
+                "/api/v1/integrations",
+                json!({
+                    "project": "p", "name": "hook", "base_url": "https://x.example.com",
+                    "headers": { "authorization": "Bearer ${secret:tok}", "x-api-key": "plain-key-123" }
+                }),
+            )
+            .await;
+        assert_eq!(created["headers"]["authorization"], "Bearer ${secret:tok}");
+        assert_eq!(created["headers"]["x-api-key"], "***");
+        let (_, listed) = h.get("/api/v1/integrations").await;
+        assert!(!listed.to_string().contains("plain-key-123"));
     }
 }
