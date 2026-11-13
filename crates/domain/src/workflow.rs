@@ -35,6 +35,8 @@ pub struct Metadata {
     pub project: String,
 }
 
+use crate::cron;
+
 const MAX_CONCURRENCY: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +109,12 @@ pub enum ValidationError {
     InvalidRetry(String),
     #[error("concurrence invalide (1 à 100 runs simultanés)")]
     InvalidConcurrency,
+    #[error("type de déclencheur non supporté: {0}")]
+    UnsupportedTrigger(String),
+    #[error(
+        "déclencheur cron invalide: `config.schedule` doit être une expression à 5 champs valide"
+    )]
+    InvalidSchedule,
     #[error("type d'étape inconnu pour {step}: {step_type}")]
     UnknownStepType { step: String, step_type: String },
     #[error("l'étape {step} dépend d'une étape inconnue: {needs}")]
@@ -148,6 +156,22 @@ impl Workflow {
         }
         if self.spec.steps.is_empty() {
             errors.push(ValidationError::NoSteps);
+        }
+        match self.spec.trigger.kind.as_str() {
+            "manual" | "webhook" => {}
+            "cron" => {
+                let valid = self
+                    .spec
+                    .trigger
+                    .config
+                    .get("schedule")
+                    .and_then(Value::as_str)
+                    .is_some_and(|schedule| cron::validate(schedule).is_ok());
+                if !valid {
+                    errors.push(ValidationError::InvalidSchedule);
+                }
+            }
+            other => errors.push(ValidationError::UnsupportedTrigger(other.to_owned())),
         }
         if self
             .spec
@@ -347,6 +371,8 @@ fn collect_references(text: &str, out: &mut BTreeSet<String>) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     const VALID: &str = r#"
@@ -628,5 +654,37 @@ spec:
         assert_ne!(plain.hash(), limited.hash());
         let yaml = VALID.replace("  trigger:", "  concurrency: 2\n  trigger:");
         assert_eq!(parse_yaml(&yaml).spec.concurrency, Some(2));
+    }
+
+    #[test]
+    fn trigger_types_are_restricted() {
+        let mut workflow = parse_yaml(VALID);
+        workflow.spec.trigger.kind = "telepathy".into();
+        assert_eq!(
+            workflow.validate(),
+            Err(vec![ValidationError::UnsupportedTrigger(
+                "telepathy".into()
+            )])
+        );
+    }
+
+    #[test]
+    fn a_cron_trigger_needs_a_valid_schedule() {
+        let mut workflow = parse_yaml(VALID);
+        workflow.spec.trigger.kind = "cron".into();
+        for config in [
+            json!(null),
+            json!({}),
+            json!({ "schedule": 5 }),
+            json!({ "schedule": "oups" }),
+        ] {
+            workflow.spec.trigger.config = config;
+            assert_eq!(
+                workflow.validate(),
+                Err(vec![ValidationError::InvalidSchedule])
+            );
+        }
+        workflow.spec.trigger.config = json!({ "schedule": "*/10 * * * *" });
+        assert!(workflow.validate().is_ok());
     }
 }
