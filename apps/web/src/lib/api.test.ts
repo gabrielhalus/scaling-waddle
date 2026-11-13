@@ -256,4 +256,25 @@ describe('api client', () => {
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ a: 1 })
     expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string)).toEqual({ signed: true })
   })
+
+  it('manages users and rotates secret keys', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    await client.users()
+    await client.createUser({ email: 'a@b.co', password: 'un-mot-de-passe-long', role: 'viewer' })
+    await client.updateUser('u 1', { role: 'operator' })
+    await client.deleteUser('u 1')
+    await client.rotateSecrets()
+
+    const calls = fetchMock.mock.calls.map((c) => [c[0], (c[1] as RequestInit | undefined)?.method])
+    expect(calls).toEqual([
+      ['/api/v1/users', undefined],
+      ['/api/v1/users', 'POST'],
+      ['/api/v1/users/u%201', 'PATCH'],
+      ['/api/v1/users/u%201', 'DELETE'],
+      ['/api/v1/secrets/rotate', 'POST'],
+    ])
+    expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string)).toEqual({ role: 'operator' })
+  })
 })

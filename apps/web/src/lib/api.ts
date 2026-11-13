@@ -69,6 +69,10 @@ export type WebhookToken = {
 
 export type IssuedWebhookToken = { id: string; token: string; signing_secret: string | null }
 
+export type ManagedUser = { id: string; email: string; role: User['role']; created_at: string }
+
+export type NewUser = { email: string; password: string; role: User['role'] }
+
 export type Integration = {
   id: string
   project: string
@@ -302,6 +306,20 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
         `/api/v1/workflows/${encodeURIComponent(id)}/webhook-tokens/${encodeURIComponent(tokenId)}`,
         { method: 'DELETE' },
       ),
+    users: () => request<ManagedUser[]>('/api/v1/users'),
+    createUser: (input: NewUser) =>
+      request<{ id: string; email: string; role: User['role'] }>('/api/v1/users', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    updateUser: (id: string, changes: { role?: User['role']; password?: string }) =>
+      request<void>(`/api/v1/users/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(changes),
+      }),
+    deleteUser: (id: string) =>
+      request<void>(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    rotateSecrets: () => request<{ rotated: number }>('/api/v1/secrets/rotate', { method: 'POST' }),
     isAuthenticated: () => storage.get() !== null,
   }
 }
