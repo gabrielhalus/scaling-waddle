@@ -27,6 +27,15 @@ function renderPage(role = 'admin', active: number | null = 1) {
     activateWorkflow: vi.fn().mockResolvedValue(undefined),
     deactivateWorkflow: vi.fn().mockResolvedValue(undefined),
     exportWorkflow: vi.fn().mockResolvedValue('name: notify\n'),
+    workflowDefinition: vi.fn().mockResolvedValue({
+      apiVersion: 'scaling-waddle.dev/v1',
+      kind: 'Workflow',
+      metadata: { name: 'notify', project: 'ops' },
+      spec: {
+        trigger: { type: 'manual' },
+        steps: [{ id: 'check', type: 'condition', with: { expression: 'true' } }],
+      },
+    }),
     importWorkflow: vi.fn().mockResolvedValue({ id: 'w1', version: 3, created: false }),
     triggerRun: vi.fn().mockResolvedValue({ run_id: 'run-9' }),
     issueWebhookToken: vi
@@ -51,6 +60,14 @@ describe('WorkflowDetailPage', () => {
     expect(await screen.findByText('notify')).toBeInTheDocument()
     expect(screen.getByText('v2')).toBeInTheDocument()
     expect(screen.getByText('v1 · active')).toBeInTheDocument()
+  })
+
+  it('draws the graph of a version', async () => {
+    const { client } = renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le graphe v1' }))
+    await waitFor(() => expect(client.workflowDefinition).toHaveBeenCalledWith('w1', 1))
+    expect(await screen.findByText('check')).toBeInTheDocument()
+    expect(screen.getByText('condition')).toBeInTheDocument()
   })
 
   it('activates another version', async () => {
