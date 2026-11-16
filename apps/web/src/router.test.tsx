@@ -111,4 +111,12 @@ describe('App routing', () => {
     expect(window.location.pathname).toBe('/workflows/w1/edit')
     expect(screen.getByRole('main')).not.toHaveClass('max-w-5xl')
   })
+
+  it('opens the new workflow page from the list', async () => {
+    window.history.replaceState(null, '', '/workflows')
+    render(<App client={fakeClient(true)} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Nouveau workflow' }))
+    expect(await screen.findByLabelText('Nom')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/workflows/new')
+  })
 })

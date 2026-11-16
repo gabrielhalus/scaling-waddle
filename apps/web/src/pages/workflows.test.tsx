@@ -7,7 +7,13 @@ import type { ApiClient } from '../lib/api'
 import { ClientProvider } from '../lib/client-context'
 import { WorkflowsPage } from './workflows'
 
-function renderPage(workflows: unknown[], onOpenRuns = vi.fn(), onOpen = vi.fn(), role = 'admin') {
+function renderPage(
+  workflows: unknown[],
+  onOpenRuns = vi.fn(),
+  onOpen = vi.fn(),
+  role = 'admin',
+  onNew = vi.fn(),
+) {
   const client = {
     workflows: vi.fn().mockResolvedValue(workflows),
     me: vi.fn().mockResolvedValue({ id: '1', email: 'a@b.c', role }),
@@ -16,11 +22,11 @@ function renderPage(workflows: unknown[], onOpenRuns = vi.fn(), onOpen = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <ClientProvider value={client}>
-        <WorkflowsPage onOpenRuns={onOpenRuns} onOpen={onOpen} />
+        <WorkflowsPage onOpenRuns={onOpenRuns} onOpen={onOpen} onNew={onNew} />
       </ClientProvider>
     </QueryClientProvider>,
   )
-  return { client, onOpenRuns, onOpen }
+  return { client, onOpenRuns, onOpen, onNew }
 }
 
 const wf = (over: object = {}) => ({
@@ -43,6 +49,18 @@ describe('WorkflowsPage', () => {
   it('flags a workflow with no active version', async () => {
     renderPage([wf({ active_version: null })])
     expect(await screen.findByText('inactif · v3 dernière')).toBeInTheDocument()
+  })
+
+  it('offers to create a workflow visually to writers only', async () => {
+    const { onNew } = renderPage([wf()])
+    await userEvent.click(await screen.findByRole('button', { name: 'Nouveau workflow' }))
+    expect(onNew).toHaveBeenCalled()
+  })
+
+  it('hides the creation button from viewers', async () => {
+    renderPage([wf()], vi.fn(), vi.fn(), 'viewer')
+    await screen.findByText('notify-on-deploy')
+    expect(screen.queryByRole('button', { name: 'Nouveau workflow' })).toBeNull()
   })
 
   it('shows an empty state', async () => {

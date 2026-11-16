@@ -298,6 +298,8 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
       request<void>(`/api/v1/workflows/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }),
     exportWorkflow: (id: string, version: number) =>
       requestText(`/api/v1/workflows/${encodeURIComponent(id)}/export?version=${version}&format=yaml`),
+    createWorkflow: (definition: WorkflowDefinition) =>
+      request<Workflow>('/api/v1/workflows', { method: 'POST', body: JSON.stringify(definition) }),
     workflowDefinition: (id: string, version: number) =>
       request<WorkflowDefinition>(
         `/api/v1/workflows/${encodeURIComponent(id)}/export?version=${version}&format=json`,

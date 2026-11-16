@@ -262,6 +262,19 @@ describe('api client', () => {
     expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string)).toEqual(definition)
   })
 
+  it('creates a workflow from a JSON definition', async () => {
+    const record = { id: 'w9', project: 'p', name: 'demo', active_version: null, latest_version: 1 }
+    const fetchMock = vi.fn().mockImplementation(async () => json(201, record))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    expect(await client.createWorkflow({ kind: 'Workflow' } as never)).toEqual(record)
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ kind: 'Workflow' })
+  })
+
   it('exposes structured issues on invalid definitions', async () => {
     const issues = [{ message: 'dépend d\'une étape inconnue', step_id: 'a' }]
     const fetchMock = vi

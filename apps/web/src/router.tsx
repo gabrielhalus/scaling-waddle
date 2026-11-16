@@ -24,6 +24,7 @@ import { RunsPage } from './pages/runs'
 import { SettingsPage } from './pages/settings'
 import { WorkflowDetailPage } from './pages/workflow-detail'
 import { WorkflowEditPage } from './pages/workflow-edit'
+import { WorkflowNewPage } from './pages/workflow-new'
 import { WorkflowsPage } from './pages/workflows'
 
 export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
@@ -36,7 +37,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
       if (!client.isAuthenticated()) throw redirect({ to: '/login' })
     },
     component: function Shell() {
-      const wide = useRouterState({ select: (state) => state.location.pathname.endsWith('/edit') })
+      const wide = useRouterState({ select: (state) => /\/workflows\/(new|[^/]+\/edit)$/.test(state.location.pathname) })
       const width = wide ? '' : 'mx-auto max-w-5xl'
       return (
         <div className="min-h-screen">
@@ -130,6 +131,22 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
               to: '/workflows/$workflowId',
               params: { workflowId },
             })
+          }
+          onNew={() => void navigate({ to: '/workflows/new' })}
+        />
+      )
+    },
+  })
+
+  const workflowNew = createRoute({
+    getParentRoute: () => shell,
+    path: '/workflows/new',
+    component: function WorkflowNew() {
+      const navigate = useNavigate()
+      return (
+        <WorkflowNewPage
+          onCreated={(workflowId) =>
+            void navigate({ to: '/workflows/$workflowId', params: { workflowId } })
           }
         />
       )
@@ -250,6 +267,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
       shell.addChildren([
         overview,
         workflows,
+        workflowNew,
         workflowDetail,
         workflowEdit,
         runs,

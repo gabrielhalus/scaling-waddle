@@ -46,9 +46,10 @@ function ImportForm({ onOpen }: { onOpen: (workflowId: string) => void }) {
 type Props = {
   onOpenRuns: (workflowId: string) => void
   onOpen: (workflowId: string) => void
+  onNew: () => void
 }
 
-export function WorkflowsPage({ onOpenRuns, onOpen }: Props) {
+export function WorkflowsPage({ onOpenRuns, onOpen, onNew }: Props) {
   const client = useClient()
   const workflows = useQuery({ queryKey: ['workflows'], queryFn: client.workflows })
   const me = useQuery({ queryKey: ['me'], queryFn: client.me })
@@ -56,7 +57,14 @@ export function WorkflowsPage({ onOpenRuns, onOpen }: Props) {
 
   return (
     <section className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">Workflows</h1>
+      <header className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold">Workflows</h1>
+        {canWrite && (
+          <button type="button" className={primaryButton} onClick={onNew}>
+            Nouveau workflow
+          </button>
+        )}
+      </header>
       {workflows.isError && <p className="text-red-600">Chargement impossible.</p>}
       {workflows.data?.length === 0 && (
         <p className="text-sm text-muted-foreground">Aucun workflow pour le moment.</p>
