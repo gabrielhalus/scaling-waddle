@@ -237,6 +237,44 @@ describe('api client', () => {
     expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({ version: 2 })
   })
 
+  it('reads a version definition as JSON, validates and saves a new version', async () => {
+    const definition = { kind: 'Workflow' }
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => json(200, definition))
+      .mockImplementationOnce(async () => json(200, { valid: false, issues: [{ message: 'm', step_id: 'a' }] }))
+      .mockImplementationOnce(async () => json(200, { version: 3 }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    expect(await client.workflowDefinition('w 1', 2)).toEqual(definition)
+    expect(await client.validateWorkflow(definition as never)).toEqual({
+      valid: false,
+      issues: [{ message: 'm', step_id: 'a' }],
+    })
+    expect(await client.addVersion('w1', definition as never)).toEqual({ version: 3 })
+
+    const calls = fetchMock.mock.calls.map((c) => [c[0], (c[1] as RequestInit | undefined)?.method])
+    expect(calls).toEqual([
+      ['/api/v1/workflows/w%201/export?version=2&format=json', undefined],
+      ['/api/v1/workflows/validate', 'POST'],
+      ['/api/v1/workflows/w1/versions', 'POST'],
+    ])
+    expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string)).toEqual(definition)
+  })
+
+  it('exposes structured issues on invalid definitions', async () => {
+    const issues = [{ message: 'dépend d\'une étape inconnue', step_id: 'a' }]
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async () => json(400, { error: 'définition invalide', details: ['x'], issues }))
+    const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
+
+    const error = await client.addVersion('w1', {} as never).catch((e) => e)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.issues).toEqual(issues)
+  })
+
   it('triggers a manual run and manages webhook tokens', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => json(200, []))
     const client = createClient({ fetch: fetchMock, storage: memoryStorage() })
