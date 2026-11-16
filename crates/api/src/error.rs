@@ -9,6 +9,7 @@ pub enum ApiError {
     Invalid {
         message: String,
         details: Vec<String>,
+        issues: Vec<serde_json::Value>,
     },
     Unauthorized,
     Forbidden,
@@ -25,9 +26,13 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, json!({ "error": message })),
-            Self::Invalid { message, details } => (
+            Self::Invalid {
+                message,
+                details,
+                issues,
+            } => (
                 StatusCode::BAD_REQUEST,
-                json!({ "error": message, "details": details }),
+                json!({ "error": message, "details": details, "issues": issues }),
             ),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
