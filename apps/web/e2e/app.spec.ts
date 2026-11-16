@@ -77,6 +77,34 @@ test("une approbation suspend le run jusqu'à la décision", async ({ page }) =>
   await expect(page.getByText('succeeded').first()).toBeVisible({ timeout: 20_000 })
 })
 
+test("l'éditeur visuel crée un workflow, ajoute une étape reliée puis affiche le run en graphe", async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Workflows' }).click()
+  await page.getByRole('button', { name: 'Nouveau workflow' }).click()
+  await page.getByLabel('Nom', { exact: true }).fill('visuel')
+  await page.getByLabel('Projet').fill('e2e')
+  await page.getByRole('button', { name: 'Continuer' }).click()
+  await page.getByRole('button', { name: 'Enregistrer une version' }).click()
+  await expect(page.getByRole('heading', { name: 'visuel' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Éditer' }).click()
+  await page.getByRole('button', { name: 'Ajouter Transformation' }).click()
+  await expect(page.getByLabel('Identifiant')).toHaveValue('transform-1')
+  await page.getByLabel('Valeur', { exact: true }).fill('42')
+  await page.getByRole('checkbox', { name: 'start' }).check()
+  await page.getByRole('button', { name: 'Enregistrer une version' }).click()
+  await expect(page.getByText('v2', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Activer v2' }).click()
+  await expect(page.getByText('v2 · active')).toBeVisible()
+  await page.getByRole('button', { name: 'Lancer' }).click()
+
+  await expect(page).toHaveURL(/\/runs\/.+/)
+  const node = page.locator('.react-flow__node[data-id="transform-1"]')
+  await expect(node).toContainText('succeeded', { timeout: 20_000 })
+  await expect(page.locator('.react-flow__node[data-id="start"]')).toContainText('succeeded')
+})
+
 test('un administrateur crée un utilisateur qui peut se connecter', async ({ page, browser }) => {
   await signIn(page)
   await page.getByRole('link', { name: 'Réglages' }).click()
