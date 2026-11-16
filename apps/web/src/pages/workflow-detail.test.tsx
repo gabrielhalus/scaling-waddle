@@ -16,6 +16,7 @@ const detail = (active: number | null = 1) => ({
 })
 
 function renderPage(role = 'admin', active: number | null = 1) {
+  const onEdit = vi.fn()
   const client = {
     workflow: vi.fn().mockResolvedValue(detail(active)),
     me: vi.fn().mockResolvedValue({ id: '1', email: 'a@b.c', role }),
@@ -47,11 +48,11 @@ function renderPage(role = 'admin', active: number | null = 1) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <ClientProvider value={client}>
-        <WorkflowDetailPage id="w1" onOpenRun={onOpenRun} />
+        <WorkflowDetailPage id="w1" onOpenRun={onOpenRun} onEdit={onEdit} />
       </ClientProvider>
     </QueryClientProvider>,
   )
-  return { client, onOpenRun }
+  return { client, onOpenRun, onEdit }
 }
 
 describe('WorkflowDetailPage', () => {
@@ -68,6 +69,18 @@ describe('WorkflowDetailPage', () => {
     await waitFor(() => expect(client.workflowDefinition).toHaveBeenCalledWith('w1', 1))
     expect(await screen.findByText('check')).toBeInTheDocument()
     expect(screen.getByText('condition')).toBeInTheDocument()
+  })
+
+  it('opens the visual editor for writers only', async () => {
+    const { onEdit } = renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'Éditer' }))
+    expect(onEdit).toHaveBeenCalled()
+  })
+
+  it('hides the editor button from viewers', async () => {
+    renderPage('viewer')
+    await screen.findByText('notify')
+    expect(screen.queryByRole('button', { name: 'Éditer' })).not.toBeInTheDocument()
   })
 
   it('activates another version', async () => {

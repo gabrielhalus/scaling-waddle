@@ -7,7 +7,7 @@ import type { WorkflowDefinition } from '../lib/workflow-definition'
 import { inputClass, outlineButton, primaryButton, dangerButton } from '../components/ui/styles'
 
 
-function Versions({ id, canWrite }: { id: string; canWrite: boolean }) {
+function Versions({ id, canWrite, onEdit }: { id: string; canWrite: boolean; onEdit: () => void }) {
   const client = useClient()
   const queryClient = useQueryClient()
   const detail = useQuery({ queryKey: ['workflow', id], queryFn: () => client.workflow(id) })
@@ -40,11 +40,18 @@ function Versions({ id, canWrite }: { id: string; canWrite: boolean }) {
           <h1 className="text-2xl font-semibold">{workflow.name}</h1>
           <span className="text-xs text-muted-foreground">{workflow.project}</span>
         </div>
-        {canWrite && workflow.active_version !== null && (
-          <button type="button" className={dangerButton} onClick={() => deactivate.mutate()}>
-            Désactiver
-          </button>
-        )}
+        <div className="flex gap-2">
+          {canWrite && (
+            <button type="button" className={primaryButton} onClick={onEdit}>
+              Éditer
+            </button>
+          )}
+          {canWrite && workflow.active_version !== null && (
+            <button type="button" className={dangerButton} onClick={() => deactivate.mutate()}>
+              Désactiver
+            </button>
+          )}
+        </div>
       </header>
       <ul className="flex flex-col divide-y divide-border rounded-lg border bg-card">
         {versions.map((item) => {
@@ -236,14 +243,22 @@ function WebhookTokens({ id, canWrite }: { id: string; canWrite: boolean }) {
   )
 }
 
-export function WorkflowDetailPage({ id, onOpenRun }: { id: string; onOpenRun: (id: string) => void }) {
+export function WorkflowDetailPage({
+  id,
+  onOpenRun,
+  onEdit,
+}: {
+  id: string
+  onOpenRun: (id: string) => void
+  onEdit: () => void
+}) {
   const client = useClient()
   const me = useQuery({ queryKey: ['me'], queryFn: client.me })
   const canWrite = me.data?.role === 'admin' || me.data?.role === 'operator'
 
   return (
     <div className="flex flex-col gap-10">
-      <Versions id={id} canWrite={canWrite} />
+      <Versions id={id} canWrite={canWrite} onEdit={onEdit} />
       {canWrite && (
         <>
           <section className="flex flex-col gap-3">

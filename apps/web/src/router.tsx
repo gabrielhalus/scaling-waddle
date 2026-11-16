@@ -9,6 +9,7 @@ import {
   createRouter,
   redirect,
   useNavigate,
+  useRouterState,
 } from '@tanstack/react-router'
 
 import type { ApiClient } from './lib/api'
@@ -22,6 +23,7 @@ import { RunDetailPage } from './pages/run-detail'
 import { RunsPage } from './pages/runs'
 import { SettingsPage } from './pages/settings'
 import { WorkflowDetailPage } from './pages/workflow-detail'
+import { WorkflowEditPage } from './pages/workflow-edit'
 import { WorkflowsPage } from './pages/workflows'
 
 export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
@@ -34,10 +36,12 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
       if (!client.isAuthenticated()) throw redirect({ to: '/login' })
     },
     component: function Shell() {
+      const wide = useRouterState({ select: (state) => state.location.pathname.endsWith('/edit') })
+      const width = wide ? '' : 'mx-auto max-w-5xl'
       return (
         <div className="min-h-screen">
           <header className="border-b bg-card">
-            <div className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3">
+            <div className={`${width} flex items-center gap-6 px-6 py-3`}>
               <span className="text-sm font-semibold">scaling-waddle</span>
               <nav className="flex flex-wrap gap-1 text-sm">
                 <Link
@@ -86,7 +90,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
               </nav>
             </div>
           </header>
-          <main className="mx-auto max-w-5xl p-6">
+          <main className={`${width} p-6`}>
             <Outlet />
           </main>
         </div>
@@ -143,6 +147,23 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
           key={workflowId}
           id={workflowId}
           onOpenRun={(runId) => void navigate({ to: '/runs/$runId', params: { runId } })}
+          onEdit={() => void navigate({ to: '/workflows/$workflowId/edit', params: { workflowId } })}
+        />
+      )
+    },
+  })
+
+  const workflowEdit = createRoute({
+    getParentRoute: () => shell,
+    path: '/workflows/$workflowId/edit',
+    component: function WorkflowEdit() {
+      const navigate = useNavigate()
+      const { workflowId } = workflowEdit.useParams()
+      return (
+        <WorkflowEditPage
+          key={workflowId}
+          id={workflowId}
+          onDone={() => void navigate({ to: '/workflows/$workflowId', params: { workflowId } })}
         />
       )
     },
@@ -230,6 +251,7 @@ export function createAppRouter(client: ApiClient, queryClient: QueryClient) {
         overview,
         workflows,
         workflowDetail,
+        workflowEdit,
         runs,
         runDetail,
         approvals,
