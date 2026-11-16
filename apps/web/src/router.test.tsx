@@ -87,4 +87,28 @@ describe('App routing', () => {
     expect(await screen.findByText('v1 · active')).toBeInTheDocument()
     expect(window.location.pathname).toBe('/workflows/w1')
   })
+
+  it('opens the visual editor in full width from a workflow', async () => {
+    const detail = {
+      workflow: { id: 'w1', project: 'ops', name: 'notify', active_version: 1, latest_version: 1 },
+      versions: [{ version: 1, hash: 'abcdef123456', created_at: '2026-11-13T10:00:00.000Z' }],
+    }
+    const client = {
+      ...fakeClient(true),
+      workflow: vi.fn().mockResolvedValue(detail),
+      webhookTokens: vi.fn().mockResolvedValue([]),
+      workflowDefinition: vi.fn().mockResolvedValue({
+        apiVersion: 'scaling-waddle.dev/v1',
+        kind: 'Workflow',
+        metadata: { name: 'notify', project: 'ops' },
+        spec: { trigger: { type: 'manual' }, steps: [{ id: 'check', type: 'condition', with: {} }] },
+      }),
+    } as unknown as ApiClient
+    window.history.replaceState(null, '', '/workflows/w1')
+    render(<App client={client} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Éditer' }))
+    expect(await screen.findByRole('button', { name: 'Enregistrer une version' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/workflows/w1/edit')
+    expect(screen.getByRole('main')).not.toHaveClass('max-w-5xl')
+  })
 })
