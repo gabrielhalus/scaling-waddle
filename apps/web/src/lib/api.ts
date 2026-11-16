@@ -1,3 +1,5 @@
+import type { WorkflowDefinition } from './workflow-definition'
+
 export type Tokens = { access: string; refresh: string }
 
 export type User = { id: string; email: string; role: 'admin' | 'operator' | 'viewer' }
@@ -109,12 +111,16 @@ export type TokenStorage = {
   set: (tokens: Tokens | null) => void
 }
 
+export type ValidationIssue = { message: string; step_id: string | null }
+
 export class ApiError extends Error {
   readonly status: number
+  readonly issues: ValidationIssue[]
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, issues: ValidationIssue[] = []) {
     super(message)
     this.status = status
+    this.issues = issues
   }
 }
 
@@ -160,8 +166,11 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
   }
 
   async function failure(res: Response): Promise<ApiError> {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null
-    return new ApiError(res.status, body?.error ?? res.statusText)
+    const body = (await res.json().catch(() => null)) as {
+      error?: string
+      issues?: ValidationIssue[]
+    } | null
+    return new ApiError(res.status, body?.error ?? res.statusText, body?.issues)
   }
 
   function refresh(): Promise<boolean> {
@@ -289,6 +298,20 @@ export function createClient({ fetch: fetcher = (...args) => fetch(...args), sto
       request<void>(`/api/v1/workflows/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }),
     exportWorkflow: (id: string, version: number) =>
       requestText(`/api/v1/workflows/${encodeURIComponent(id)}/export?version=${version}&format=yaml`),
+    workflowDefinition: (id: string, version: number) =>
+      request<WorkflowDefinition>(
+        `/api/v1/workflows/${encodeURIComponent(id)}/export?version=${version}&format=json`,
+      ),
+    validateWorkflow: (definition: WorkflowDefinition) =>
+      request<{ valid: boolean; issues: ValidationIssue[] }>('/api/v1/workflows/validate', {
+        method: 'POST',
+        body: JSON.stringify(definition),
+      }),
+    addVersion: (id: string, definition: WorkflowDefinition) =>
+      request<{ version: number }>(`/api/v1/workflows/${encodeURIComponent(id)}/versions`, {
+        method: 'POST',
+        body: JSON.stringify(definition),
+      }),
     triggerRun: (id: string, payload: unknown) =>
       request<{ run_id: string }>(`/api/v1/workflows/${encodeURIComponent(id)}/runs`, {
         method: 'POST',
