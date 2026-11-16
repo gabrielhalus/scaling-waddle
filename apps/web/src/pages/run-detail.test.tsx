@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -22,8 +22,22 @@ const detail = (status: string, steps: object[] = []) => ({
   steps,
 })
 
-function renderPage(status: string, role = 'admin', steps: object[] = []) {
+const definition = {
+  apiVersion: 'scaling-waddle.dev/v1',
+  kind: 'Workflow',
+  metadata: { name: 'notify', project: 'ops' },
+  spec: {
+    trigger: { type: 'manual' },
+    steps: [
+      { id: 'check', type: 'condition', with: {} },
+      { id: 'b', type: 'delay', needs: ['check'], with: {} },
+    ],
+  },
+}
+
+function renderPage(status: string, role = 'admin', steps: object[] = [], withGraph = false) {
   const client = {
+    ...(withGraph ? { workflowDefinition: vi.fn().mockResolvedValue(definition) } : {}),
     run: vi.fn().mockResolvedValue(detail(status, steps)),
     me: vi.fn().mockResolvedValue({ id: '1', email: 'a@b.c', role }),
     cancelRun: vi.fn().mockResolvedValue({ run_id: 'run-1', status: 'cancelled' }),
@@ -91,5 +105,31 @@ describe('RunDetailPage', () => {
     const wake = Date.UTC(2026, 10, 13, 12, 0, 0)
     renderPage('waiting', 'admin', [step({ step_id: 'pause', status: 'waiting', wake_at: wake })])
     expect(await screen.findByText(`reprise à ${new Date(wake).toLocaleString()}`)).toBeInTheDocument()
+  })
+
+  describe('graph', () => {
+    const node = (id: string) => document.querySelector(`.react-flow__node[data-id="${id}"]`) as HTMLElement
+
+    it('draws the run version with the status of each step', async () => {
+      const { client } = renderPage('failed', 'admin', [step(), step({ step_id: 'b', status: 'failed' })], true)
+      await waitFor(() => expect(node('b')).not.toBeNull())
+      expect(client.workflowDefinition).toHaveBeenCalledWith('w1', 2)
+      expect(within(node('check')).getByText('succeeded')).toBeInTheDocument()
+      expect(within(node('b')).getByText('failed')).toBeInTheDocument()
+    })
+
+    it('highlights the step card matching the clicked node', async () => {
+      renderPage('failed', 'admin', [step(), step({ step_id: 'b', status: 'failed' })], true)
+      await waitFor(() => expect(node('b')).not.toBeNull())
+      fireEvent.click(node('b'))
+      const card = screen.getAllByRole('listitem').find((li) => li.textContent?.startsWith('b'))
+      expect(card).toHaveAttribute('aria-current', 'true')
+    })
+
+    it('still shows the run when the definition cannot be loaded', async () => {
+      renderPage('succeeded', 'admin', [step()])
+      expect(await screen.findByText('webhook.received')).toBeInTheDocument()
+      expect(document.querySelector('.react-flow')).toBeNull()
+    })
   })
 })
