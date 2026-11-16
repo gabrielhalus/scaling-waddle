@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { WorkflowCanvas } from '../components/workflow-editor/workflow-canvas'
 import { useClient } from '../lib/client-context'
+import type { WorkflowDefinition } from '../lib/workflow-definition'
 import { inputClass, outlineButton, primaryButton, dangerButton } from '../components/ui/styles'
 
 
@@ -16,12 +18,17 @@ function Versions({ id, canWrite }: { id: string; canWrite: boolean }) {
     onSuccess: refresh,
   })
   const deactivate = useMutation({ mutationFn: () => client.deactivateWorkflow(id), onSuccess: refresh })
+  const [graph, setGraph] = useState<WorkflowDefinition | null>(null)
   const view = useMutation({
     mutationFn: async (version: number) => ({
       version,
       yaml: await client.exportWorkflow(id, version),
     }),
     onSuccess: setShown,
+  })
+  const viewGraph = useMutation({
+    mutationFn: (version: number) => client.workflowDefinition(id, version),
+    onSuccess: setGraph,
   })
   if (!detail.data) return detail.isError ? <p className="text-red-600">Workflow introuvable.</p> : null
   const { workflow, versions } = detail.data
@@ -51,6 +58,14 @@ function Versions({ id, canWrite }: { id: string; canWrite: boolean }) {
                 <button
                   type="button"
                   className={outlineButton}
+                  aria-label={`Voir le graphe v${item.version}`}
+                  onClick={() => viewGraph.mutate(item.version)}
+                >
+                  Graphe
+                </button>
+                <button
+                  type="button"
+                  className={outlineButton}
                   aria-label={`Voir le YAML v${item.version}`}
                   onClick={() => view.mutate(item.version)}
                 >
@@ -71,6 +86,7 @@ function Versions({ id, canWrite }: { id: string; canWrite: boolean }) {
           )
         })}
       </ul>
+      {graph && <WorkflowCanvas definition={graph} />}
       {shown && (
         <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{shown.yaml}</pre>
       )}
