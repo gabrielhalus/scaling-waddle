@@ -157,6 +157,22 @@ pub enum ValidationError {
     UndeclaredReference { step: String, reference: String },
 }
 
+impl ValidationError {
+    pub fn step_id(&self) -> Option<&str> {
+        match self {
+            Self::InvalidStepId(step)
+            | Self::DuplicateStepId(step)
+            | Self::InvalidRetry(step)
+            | Self::SelfDependency(step)
+            | Self::UnknownStepType { step, .. }
+            | Self::UnknownDependency { step, .. }
+            | Self::UndeclaredReference { step, .. } => Some(step),
+            Self::Cycle(steps) => steps.first().map(String::as_str),
+            _ => None,
+        }
+    }
+}
+
 impl Workflow {
     pub fn from_yaml(text: &str) -> Result<Self, serde_yaml_ng::Error> {
         serde_yaml_ng::from_str(text)
@@ -784,5 +800,20 @@ spec:
             "uptime-kuma.down"
         ));
         assert!(!event_matches(&patterns(&[]), "gitlab.push"));
+    }
+
+    #[test]
+    fn validation_errors_point_at_their_step() {
+        let steps = "    - {id: a, type: delay, needs: [ghost]}\n    - {id: b, type: nope}\n    - {id: b, type: delay}\n    - {id: c, type: delay, needs: [c]}\n";
+        let errors = parse_yaml(&with_steps(steps)).validate().unwrap_err();
+        let ids: Vec<_> = errors.iter().map(ValidationError::step_id).collect();
+        assert!(ids.contains(&Some("a")), "{ids:?}");
+        assert!(ids.contains(&Some("b")), "{ids:?}");
+        assert!(ids.contains(&Some("c")), "{ids:?}");
+        assert_eq!(ValidationError::NoSteps.step_id(), None);
+        assert_eq!(
+            ValidationError::Cycle(vec!["x".into(), "y".into()]).step_id(),
+            Some("x")
+        );
     }
 }

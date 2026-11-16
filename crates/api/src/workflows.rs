@@ -6,7 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sw_domain::workflow::Workflow;
+use sw_domain::workflow::{ValidationError, Workflow};
 use sw_infrastructure::workflows::{self, WorkflowError, WorkflowRecord};
 
 use crate::AppState;
@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/workflows", get(list).post(create))
         .route("/api/v1/workflows/import", post(import))
+        .route("/api/v1/workflows/validate", post(validate))
         .route("/api/v1/workflows/{id}", get(detail))
         .route("/api/v1/workflows/{id}/export", get(export))
         .route("/api/v1/workflows/{id}/versions", post(add_version))
@@ -40,7 +41,14 @@ fn record_json(record: &WorkflowRecord) -> Value {
     })
 }
 
-fn parse_definition(headers: &HeaderMap, body: &Bytes) -> Result<Workflow, ApiError> {
+fn issues_json(errors: &[ValidationError]) -> Vec<Value> {
+    errors
+        .iter()
+        .map(|err| json!({ "message": err.to_string(), "step_id": err.step_id() }))
+        .collect()
+}
+
+fn read_definition(headers: &HeaderMap, body: &Bytes) -> Result<Workflow, ApiError> {
     let text = std::str::from_utf8(body)
         .map_err(|_| ApiError::BadRequest("le corps doit être de l'UTF-8".into()))?;
     let is_yaml = headers
@@ -52,13 +60,34 @@ fn parse_definition(headers: &HeaderMap, body: &Bytes) -> Result<Workflow, ApiEr
     } else {
         Workflow::from_json(text).map_err(|err| err.to_string())
     };
-    let workflow =
-        parsed.map_err(|err| ApiError::BadRequest(format!("définition illisible: {err}")))?;
+    parsed.map_err(|err| ApiError::BadRequest(format!("définition illisible: {err}")))
+}
+
+fn parse_definition(headers: &HeaderMap, body: &Bytes) -> Result<Workflow, ApiError> {
+    let workflow = read_definition(headers, body)?;
     workflow.validate().map_err(|errors| ApiError::Invalid {
         message: "définition invalide".into(),
         details: errors.iter().map(ToString::to_string).collect(),
+        issues: issues_json(&errors),
     })?;
     Ok(workflow)
+}
+
+async fn validate(
+    auth: AuthUser,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    auth.require_writer()?;
+    let workflow = read_definition(&headers, &body)?;
+    let issues = workflow
+        .validate()
+        .err()
+        .map(|errors| issues_json(&errors))
+        .unwrap_or_default();
+    Ok(Json(
+        json!({ "valid": issues.is_empty(), "issues": issues }),
+    ))
 }
 
 impl From<WorkflowError> for ApiError {
@@ -412,6 +441,47 @@ mod tests {
         let (status, body) = post_json(&h, "/api/v1/workflows", bad).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["details"][0].as_str().unwrap().contains("ghost"));
+        assert_eq!(body["issues"][0]["step_id"], "a");
+    }
+
+    #[tokio::test]
+    async fn validate_reports_issues_without_persisting() {
+        let h = harness().await;
+        let (status, body) = post_json(&h, "/api/v1/workflows/validate", workflow("w", "1s")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "valid": true, "issues": [] }));
+
+        let mut bad = workflow("w", "1s");
+        bad["spec"]["steps"][0]["needs"] = json!(["ghost"]);
+        let (status, body) = post_json(&h, "/api/v1/workflows/validate", bad).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["valid"], false);
+        assert_eq!(body["issues"][0]["step_id"], "a");
+        assert!(
+            body["issues"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("ghost")
+        );
+
+        let (_, list) = get(&h, "/api/v1/workflows").await;
+        assert_eq!(list, json!([]));
+    }
+
+    #[tokio::test]
+    async fn validate_requires_authentication_and_a_readable_body() {
+        let h = harness().await;
+        let (status, _) = send(&h.app, "POST", "/api/v1/workflows/validate", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = send(
+            &h.app,
+            "POST",
+            "/api/v1/workflows/validate",
+            Some(&h.admin),
+            Some(("application/json", "{pas du json".to_owned())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
